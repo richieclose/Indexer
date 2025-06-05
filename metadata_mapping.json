@@ -1,0 +1,29 @@
+{
+    "xml_to_exif": {
+        "GPS_Latitude": "GPS_Latitude",
+        "GPS_Longitude": "GPS_Longitude",
+        "GPS_Altitude": "GPS_Altitude",
+        "Depth": "Depth",
+        "Pitch": "Pitch",
+        "Roll": "Roll",
+        "Yaw": "Yaw",
+        "Acquisition_exposure": "ExposureTime",
+        "Acquisition_aperture": "ApertureValue",
+        "Acquisition_name": "Camera_Model",
+        "Acquisition_camera_session_name": "Session",
+        "Version_software": "Software",
+        "Version_serial_number": "SerialNumber",
+        "Capture_Time": "DateTimeOriginal"
+    },
+    "exif_to_xml": {
+        "GPS_Latitude": "GPS_Latitude",
+        "GPS_Longitude": "GPS_Longitude",
+        "GPS_Altitude": "GPS_Altitude",
+        "ExposureTime": "Acquisition_exposure",
+        "ApertureValue": "Acquisition_aperture",
+        "Camera_Model": "Acquisition_name",
+        "Software": "Version_software",
+        "SerialNumber": "Version_serial_number",
+        "DateTimeOriginal": "Capture_Time"
+    }
+} 
