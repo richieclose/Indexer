@@ -297,7 +297,7 @@ class DatabaseManager:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 
-                # Detect GPS column names dynamically
+                # Detect GPS column names dynamically using XML->EXIF->JSON precedence
                 lat_col, lon_col = self.get_gps_column_names()
                 if not lat_col or not lon_col:
                     logger.warning("No GPS coordinate columns found in database")
@@ -308,11 +308,11 @@ class DatabaseManager:
                 columns = [row[1] for row in cursor.fetchall()]
                 alt_columns = [col for col in columns if 'altitude' in col.lower() and 'gps' in col.lower()]
                 
-                # Build COALESCE expression to get altitude from any source (prioritize EXIF, then JSON, then XML)
+                # Build COALESCE expression to get altitude from any source
+                # Prioritize XML, then EXIF, then JSON
                 if alt_columns:
-                    # Sort altitude columns to prioritize EXIF, then JSON, then XML
                     sorted_alt_columns = sorted(alt_columns, key=lambda x: (
-                        0 if x.startswith('EXIF_') else 1 if x.startswith('JSON_') else 2
+                        0 if x.startswith('XML_') else 1 if x.startswith('EXIF_') else 2
                     ))
                     coalesce_expr = f"COALESCE({', '.join(sorted_alt_columns)})"
                     
@@ -320,8 +320,10 @@ class DatabaseManager:
                         SELECT path, {lat_col}, {lon_col}, {coalesce_expr} as altitude, 
                                File_Location_Folder, File_Location_Session
                         FROM {self.table_name}
-                        WHERE {lat_col} IS NOT NULL 
+                        WHERE {lat_col} IS NOT NULL
                         AND {lon_col} IS NOT NULL
+                        AND TRIM({lat_col}) != ''
+                        AND TRIM({lon_col}) != ''
                         AND CAST({lat_col} AS REAL) BETWEEN :lat - :lat_delta AND :lat + :lat_delta
                         AND CAST({lon_col} AS REAL) BETWEEN :lon - :lon_delta AND :lon + :lon_delta
                     """
@@ -330,8 +332,10 @@ class DatabaseManager:
                         SELECT path, {lat_col}, {lon_col}, NULL as altitude, 
                                File_Location_Folder, File_Location_Session
                         FROM {self.table_name}
-                        WHERE {lat_col} IS NOT NULL 
+                        WHERE {lat_col} IS NOT NULL
                         AND {lon_col} IS NOT NULL
+                        AND TRIM({lat_col}) != ''
+                        AND TRIM({lon_col}) != ''
                         AND CAST({lat_col} AS REAL) BETWEEN :lat - :lat_delta AND :lat + :lat_delta
                         AND CAST({lon_col} AS REAL) BETWEEN :lon - :lon_delta AND :lon + :lon_delta
                     """
@@ -437,12 +441,28 @@ class DatabaseManager:
                 cursor.execute(f"PRAGMA table_info({self.table_name})")
                 columns = [row[1] for row in cursor.fetchall()]
                 
-                # Find GPS latitude and longitude columns
-                lat_columns = [col for col in columns if 'latitude' in col.lower() and 'gps' in col.lower()]
-                lon_columns = [col for col in columns if 'longitude' in col.lower() and 'gps' in col.lower()]
-                
-                if lat_columns and lon_columns:
-                    return lat_columns[0], lon_columns[0]
+                prefixes = ['XML_', 'EXIF_', 'JSON_']
+                for prefix in prefixes:
+                    lat_candidates = [c for c in columns if c.lower().startswith(prefix.lower()) and 'latitude' in c.lower()]
+                    lon_candidates = [c for c in columns if c.lower().startswith(prefix.lower()) and 'longitude' in c.lower()]
+                    if lat_candidates and lon_candidates:
+                        lat_col = lat_candidates[0]
+                        lon_col = lon_candidates[0]
+                        # Check if any data exists in these columns
+                        cursor.execute(
+                            f"SELECT 1 FROM {self.table_name} WHERE {lat_col} IS NOT NULL AND TRIM({lat_col}) != '' "
+                            f"AND {lon_col} IS NOT NULL AND TRIM({lon_col}) != '' LIMIT 1"
+                        )
+                        if cursor.fetchone():
+                            return lat_col, lon_col
+
+                # If no columns have data, fall back to first available pair
+                for prefix in prefixes:
+                    lat_candidates = [c for c in columns if c.lower().startswith(prefix.lower()) and 'latitude' in c.lower()]
+                    lon_candidates = [c for c in columns if c.lower().startswith(prefix.lower()) and 'longitude' in c.lower()]
+                    if lat_candidates and lon_candidates:
+                        return lat_candidates[0], lon_candidates[0]
+
                 return None, None
                 
         except sqlite3.Error as e:
