@@ -326,9 +326,9 @@ class RadiusSearchWorker(QThread):
                     # Check if within radius
                     if distance <= (self.radius / 1000):  # Convert meters to km
                         # Parse altitude if present
-                        if altitude:
+                        if altitude is not None and altitude != '':
                             try:
-                                alt_value = float(altitude.replace('m', ''))
+                                alt_value = float(str(altitude).replace('m', ''))
                                 # Apply altitude filters
                                 if self.min_alt is not None and alt_value < self.min_alt:
                                     continue
