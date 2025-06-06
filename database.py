@@ -293,7 +293,7 @@ class DatabaseManager:
                     return []
                 
                 # Find all GPS altitude columns
-                cursor.execute("PRAGMA table_info(images)")
+                cursor.execute(f"PRAGMA table_info({self.table_name})")
                 columns = [row[1] for row in cursor.fetchall()]
                 alt_columns = [col for col in columns if 'altitude' in col.lower() and 'gps' in col.lower()]
                 
@@ -423,7 +423,7 @@ class DatabaseManager:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("PRAGMA table_info(images)")
+                cursor.execute(f"PRAGMA table_info({self.table_name})")
                 columns = [row[1] for row in cursor.fetchall()]
                 
                 # Find GPS latitude and longitude columns
