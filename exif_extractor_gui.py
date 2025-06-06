@@ -40,6 +40,7 @@ from config import (
 SUPPORTED_IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.tiff', '.bmp')
 
 from workers import ExifExtractorWorker, BatchProcessWorker, RadiusSearchWorker # Added RadiusSearchWorker
+from database import DatabaseManager
 from exif_utils import (
     convert_to_degrees, format_gps_timestamp, get_gps_info, 
     format_shutter_speed, parse_dms_string_to_dd, # Added parse_dms_string_to_dd
@@ -2974,6 +2975,13 @@ try:
                     if selected_value != "Any":
                         tag_filter_values[tag_column] = selected_value
 
+            # Store active filters so handle_search_results can access them
+            self.active_search_filters = {
+                'folder': selected_folder if selected_folder != "All Folders" else None,
+                'session': selected_session if selected_session != "All Sessions" else None,
+                'tag_filters': tag_filter_values,
+            }
+
             # Create and start the worker with filters
             self.search_worker = RadiusSearchWorker(
                 self.search_db_path.text(),
@@ -3000,9 +3008,34 @@ try:
             self.selection_counter.setText("Selected: 0 images")
             
             if not results:
-                QMessageBox.information(self, "Search Results", "No images found matching the criteria.")
-                self.select_all_btn.setEnabled(False)
-                self.save_selected_btn.setEnabled(False)
+                db_manager = DatabaseManager(self.search_db_path.text())
+                filters = getattr(self, 'active_search_filters', {
+                    'folder': None,
+                    'session': None,
+                    'tag_filters': {},
+                })
+                missing_gps = db_manager.get_images_matching_filters(
+                    filters.get('folder'),
+                    filters.get('session'),
+                    filters.get('tag_filters'),
+                )
+
+                if missing_gps:
+                    QMessageBox.warning(
+                        self,
+                        "Warning",
+                        f"Found {len(missing_gps)} images matching your filters, but none of them have GPS coordinates."
+                    )
+                    placeholder_results = [
+                        (path, 0, None, folder, session)
+                        for path, folder, session in missing_gps
+                    ]
+                    # Recurse with placeholder results so thumbnails are displayed
+                    self.handle_search_results(placeholder_results)
+                else:
+                    QMessageBox.information(self, "Search Results", "No images found matching the criteria.")
+                    self.select_all_btn.setEnabled(False)
+                    self.save_selected_btn.setEnabled(False)
                 return
             
             # Store image paths for navigation
