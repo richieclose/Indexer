@@ -457,9 +457,10 @@ class RoutePlaybackWidget(QWidget):
 
                 # Add current position marker with a unique ID
                 current = self.route_data[self.current_index]
+                alt_text = f"{current['altitude']}m" if current['altitude'] is not None else 'N/A'
                 folium.Marker(
                     [current['latitude'], current['longitude']],
-                    popup=f"Altitude: {current['altitude']}m<br>Time: {current['timestamp']}",
+                    popup=f"Altitude: {alt_text}<br>Time: {current['timestamp']}",
                     icon=folium.Icon(color='red'),
                     element_id='current_marker'
                 ).add_to(m)
@@ -482,8 +483,9 @@ class RoutePlaybackWidget(QWidget):
                         initializeMarker();
                     }
                     if (currentMarker) {
+                        var altText = altitude === 'N/A' ? 'N/A' : altitude + 'm';
                         currentMarker.setLatLng([lat, lng]);
-                        currentMarker.setPopupContent(`Altitude: ${altitude}m<br>Time: ${timestamp}`);
+                        currentMarker.setPopupContent(`Altitude: ${altText}<br>Time: ${timestamp}`);
                     }
                 }
 
@@ -515,7 +517,8 @@ class RoutePlaybackWidget(QWidget):
                 # Just update marker position using JavaScript
                 current = self.route_data[self.current_index]
                 timestamp_str = current['timestamp'].strftime('%H:%M:%S') if current['timestamp'] else '--:--:--'
-                js = f"updateMarkerPosition({current['latitude']}, {current['longitude']}, {current['altitude']}, '{timestamp_str}');"
+                alt_val = current['altitude'] if current['altitude'] is not None else 'N/A'
+                js = f"updateMarkerPosition({current['latitude']}, {current['longitude']}, {alt_val}, '{timestamp_str}');"
                 self.map_widget.page().runJavaScript(js)
 
         except Exception as e:
@@ -531,7 +534,7 @@ class RoutePlaybackWidget(QWidget):
             if not hasattr(self, 'profile_created'):
                 # Create distance and altitude arrays
                 distances = [point['total_distance'] for point in self.route_data]
-                altitudes = [point['altitude'] for point in self.route_data]
+                altitudes = [point['altitude'] if point['altitude'] is not None else 0 for point in self.route_data]
 
                 # Create the plot with a specific div ID
                 fig = go.Figure()
@@ -607,7 +610,8 @@ class RoutePlaybackWidget(QWidget):
             else:
                 # Just update marker position using JavaScript
                 current = self.route_data[self.current_index]
-                js = f"updateAltitudeMarker({current['total_distance']}, {current['altitude']});"
+                alt_val = current['altitude'] if current['altitude'] is not None else 0
+                js = f"updateAltitudeMarker({current['total_distance']}, {alt_val});"
                 self.altitude_widget.page().runJavaScript(js)
 
         except Exception as e:
@@ -626,13 +630,18 @@ class RoutePlaybackWidget(QWidget):
         # Calculate elevation gain
         elevation_gain = 0
         for i in range(1, len(self.route_data)):
-            diff = self.route_data[i]['altitude'] - self.route_data[i-1]['altitude']
+            alt_i = self.route_data[i]['altitude'] or 0
+            prev_alt = self.route_data[i-1]['altitude'] or 0
+            diff = alt_i - prev_alt
             if diff > 0:
                 elevation_gain += diff
 
         self.total_distance_label.setText(f"Total Distance: {total_distance:.1f} km")
         self.elevation_gain_label.setText(f"Elevation Gain: {elevation_gain:.1f} m")
-        self.current_altitude_label.setText(f"Current Altitude: {current['altitude']:.1f} m")
+        if current['altitude'] is None:
+            self.current_altitude_label.setText("Current Altitude: N/A")
+        else:
+            self.current_altitude_label.setText(f"Current Altitude: {current['altitude']:.1f} m")
         
         # Handle timestamp display
         if current['timestamp']:

@@ -1133,10 +1133,11 @@ try:
                         print(f"Error parsing timestamp: {e}")
                         ts = '--:--:--'
 
+                    current_alt = current['altitude'] if current['altitude'] is not None else 'N/A'
                     js_call = (
                         f"updateMarkerPosition("
                         f"{current['latitude']}, {current['longitude']}, "
-                        f"{current['altitude']}, '{ts}'"
+                        f"{current_alt}, '{ts}'"
                         f");"
                     )
                     print(f"Executing JavaScript: {js_call}")
@@ -1184,6 +1185,7 @@ try:
                     print(f"Error parsing timestamp: {e}")
                     ts = '--:--:--'
 
+                first_alt_text = f"{first['altitude']}m" if first['altitude'] is not None else 'N/A'
                 map_var = m.get_name()
                 print(f"Map variable name: {map_var}")
 
@@ -1207,7 +1209,7 @@ try:
                             {{ icon: L.icon({{ iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png' }}) }}
                         )
                             .addTo({map_var})
-                            .bindPopup(`Altitude: {first['altitude']}m<br>Time: {ts}`);
+                            .bindPopup(`Altitude: {first_alt_text}<br>Time: {ts}`);
                         console.log('Marker created:', window.currentMarker);
                     }});
 
@@ -1215,8 +1217,9 @@ try:
                     function updateMarkerPosition(lat, lng, altitude, timestamp) {{
                         console.log('Updating marker position:', lat, lng, altitude, timestamp);
                         if (window.currentMarker) {{
+                            var altText = altitude === 'N/A' ? 'N/A' : altitude + 'm';
                             window.currentMarker.setLatLng([lat, lng])
-                                .setPopupContent(`Altitude: ${{altitude}}m<br>Time: ${{timestamp}}`);
+                                .setPopupContent(`Altitude: ${altText}<br>Time: ${timestamp}`);
                         }}
                     }}
                 </script>
@@ -1266,13 +1269,14 @@ try:
                 if hasattr(self, 'profile_created') and self.profile_created:
                     # Update marker position using JavaScript
                     current = self.route_data[self.current_index]
+                    current_alt = current['altitude'] if current['altitude'] is not None else 0
                     self.altitude_widget.page().runJavaScript(f"""
                         if (typeof Plotly !== 'undefined') {{
                             var update = {{
                                 x: [[{current['total_distance']}]],
-                                y: [[{current['altitude']}]]
+                                y: [[{current_alt}]]
                             }};
-                            
+
                             // Update the second trace (index 1) which is our marker
                             Plotly.update('altitude-plot', update, {{}}, [1]);
                         }}
@@ -1281,7 +1285,7 @@ try:
 
                 # Create distance and altitude arrays
                 distances = [point['total_distance'] for point in self.route_data]
-                altitudes = [point['altitude'] for point in self.route_data]
+                altitudes = [point['altitude'] if point['altitude'] is not None else 0 for point in self.route_data]
 
                 # Create the plot with a specific div ID
                 fig = go.Figure()
@@ -1355,13 +1359,18 @@ try:
             # Calculate elevation gain
             elevation_gain = 0
             for i in range(1, len(self.route_data)):
-                diff = self.route_data[i]['altitude'] - self.route_data[i-1]['altitude']
+                alt_i = self.route_data[i]['altitude'] or 0
+                prev_alt = self.route_data[i-1]['altitude'] or 0
+                diff = alt_i - prev_alt
                 if diff > 0:
                     elevation_gain += diff
 
             self.total_distance_label.setText(f"Total Distance: {total_distance:.1f} km")
             self.elevation_gain_label.setText(f"Elevation Gain: {elevation_gain:.1f} m")
-            self.current_altitude_label.setText(f"Current Altitude: {current['altitude']:.1f} m")
+            if current['altitude'] is None:
+                self.current_altitude_label.setText("Current Altitude: N/A")
+            else:
+                self.current_altitude_label.setText(f"Current Altitude: {current['altitude']:.1f} m")
             
             # Handle timestamp display
             if current['timestamp']:
