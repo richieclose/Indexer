@@ -1671,6 +1671,10 @@ try:
             """Setup the tag configuration tab UI."""
             layout = QHBoxLayout(self)
 
+            # Create main horizontal splitter
+            main_splitter = QSplitter(Qt.Orientation.Horizontal)
+            layout.addWidget(main_splitter)
+
             # Left panel - Explorer view
             left_panel = QWidget()
             left_layout = QVBoxLayout(left_panel)
@@ -1705,16 +1709,20 @@ try:
             db_layout.addWidget(db_btn)
             left_layout.addLayout(db_layout)
 
-            layout.addWidget(left_panel, stretch=1)
+            main_splitter.addWidget(left_panel)
 
-            # Right panel - Split for thumbnails and tag config
-            right_panel = QWidget()
-            right_layout = QVBoxLayout(right_panel)
+            # Right panel with vertical splitter
+            right_splitter = QSplitter(Qt.Orientation.Vertical)
+            main_splitter.addWidget(right_splitter)
+
+            # Upper right panel - Thumbnails
+            upper_right_panel = QWidget()
+            upper_right_layout = QVBoxLayout(upper_right_panel)
 
             # Current folder label
             self.current_folder_label = QLabel("No folder selected")
             self.current_folder_label.setStyleSheet("font-weight: bold;")
-            right_layout.addWidget(self.current_folder_label)
+            upper_right_layout.addWidget(self.current_folder_label)
 
             # Thumbnail section
             self.thumbnail_scroll = QScrollArea()
@@ -1722,10 +1730,12 @@ try:
             self.thumbnail_container = QWidget()
             self.thumbnail_layout = QGridLayout(self.thumbnail_container)
             self.thumbnail_scroll.setWidget(self.thumbnail_container)
-            right_layout.addWidget(QLabel("Images in Selected Folder:"))
-            right_layout.addWidget(self.thumbnail_scroll, stretch=2)
+            upper_right_layout.addWidget(QLabel("Images in Selected Folder:"))
+            upper_right_layout.addWidget(self.thumbnail_scroll)
 
-            # Tag configuration section
+            right_splitter.addWidget(upper_right_panel)
+
+            # Lower right panel - Tag Configuration
             tag_group = QGroupBox("Tag Configuration")
             tag_layout = QVBoxLayout()
 
@@ -1770,9 +1780,11 @@ try:
             tag_layout.addLayout(button_layout)
 
             tag_group.setLayout(tag_layout)
-            right_layout.addWidget(tag_group)
+            right_splitter.addWidget(tag_group)
 
-            layout.addWidget(right_panel, stretch=2)
+            # Set initial splitter sizes
+            main_splitter.setSizes([300, 700])  # Left panel 300px, Right panel 700px
+            right_splitter.setSizes([400, 300])  # Upper panel 400px, Lower panel 300px
 
         def select_database(self):
             """Select database file."""
