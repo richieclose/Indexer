@@ -1986,37 +1986,32 @@ try:
                 return
 
             try:
-                # Get all image files and their tags
+                # Get all image files recursively
                 image_files = []
-                for file in os.listdir(self.current_folder):
-                    if file.lower().endswith(SUPPORTED_IMAGE_EXTENSIONS):
-                        image_files.append(os.path.join(self.current_folder, file))
+                for root, _, files in os.walk(self.current_folder):
+                    for file in files:
+                        if file.lower().endswith(SUPPORTED_IMAGE_EXTENSIONS):
+                            image_files.append(os.path.join(root, file))
 
                 if not image_files:
-                    QMessageBox.warning(self, "Warning", "No images found in the selected folder.")
+                    QMessageBox.warning(self, "Warning", "No images found in the selected folder or its subdirectories.")
                     return
 
-                # Get tags from config file
-                config_path = os.path.join(self.current_folder, "tags.config")
-                if not os.path.exists(config_path):
-                    QMessageBox.warning(self, "Warning", "No tags.config file found in the selected folder.")
+                # Process tags for each image using the find_applicable_tags function
+                image_tags = {}
+                for image_path in image_files:
+                    applicable_tags = find_applicable_tags(image_path)
+                    if applicable_tags:
+                        image_tags[image_path] = applicable_tags
+
+                if not image_tags:
+                    QMessageBox.warning(self, "Warning", "No applicable tags found in tags.config files.")
                     return
 
-                # Read tags in the correct format
-                tags = {}
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        line = line.strip()
-                        if line.startswith('#') and ':' in line:
-                            # Remove the leading # and split on first colon
-                            tag_line = line[1:].strip()
-                            if ':' in tag_line:
-                                tag_name, tag_value = tag_line.split(':', 1)
-                                tag_name = tag_name.strip()
-                                tag_value = tag_value.strip()
-                                # Convert tag name to database column format
-                                sql_tag_name = f"Tag_{tag_name.replace('-', '_')}"
-                                tags[sql_tag_name] = tag_value
+                # Get unique tag names for column creation
+                all_tag_names = set()
+                for tags in image_tags.values():
+                    all_tag_names.update(tags.keys())
 
                 # Start the batch processing
                 self.batch_worker = BatchProcessWorker(
@@ -2025,10 +2020,14 @@ try:
                     {},  # No field mapping needed
                     [],  # No field selection needed
                     True,  # Always append mode
-                    {path: tags for path in image_files},  # Apply tags to all images
-                    list(tags.keys())  # List of tag names
+                    image_tags,  # Apply specific tags to each image
+                    list(all_tag_names)  # List of all tag names for column creation
                 )
-                self.batch_worker.finished.connect(lambda: QMessageBox.information(self, "Success", "Folder indexed successfully!"))
+                self.batch_worker.finished.connect(lambda: QMessageBox.information(
+                    self, 
+                    "Success", 
+                    f"Successfully indexed {len(image_files)} images with tags from tags.config files."
+                ))
                 self.batch_worker.error.connect(lambda msg: QMessageBox.critical(self, "Error", f"Indexing failed: {msg}"))
                 self.batch_worker.start()
 
