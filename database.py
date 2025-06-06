@@ -320,8 +320,10 @@ class DatabaseManager:
                         SELECT path, {lat_col}, {lon_col}, {coalesce_expr} as altitude, 
                                File_Location_Folder, File_Location_Session
                         FROM {self.table_name}
-                        WHERE {lat_col} IS NOT NULL 
+                        WHERE {lat_col} IS NOT NULL
                         AND {lon_col} IS NOT NULL
+                        AND TRIM({lat_col}) != ''
+                        AND TRIM({lon_col}) != ''
                         AND CAST({lat_col} AS REAL) BETWEEN :lat - :lat_delta AND :lat + :lat_delta
                         AND CAST({lon_col} AS REAL) BETWEEN :lon - :lon_delta AND :lon + :lon_delta
                     """
@@ -330,8 +332,10 @@ class DatabaseManager:
                         SELECT path, {lat_col}, {lon_col}, NULL as altitude, 
                                File_Location_Folder, File_Location_Session
                         FROM {self.table_name}
-                        WHERE {lat_col} IS NOT NULL 
+                        WHERE {lat_col} IS NOT NULL
                         AND {lon_col} IS NOT NULL
+                        AND TRIM({lat_col}) != ''
+                        AND TRIM({lon_col}) != ''
                         AND CAST({lat_col} AS REAL) BETWEEN :lat - :lat_delta AND :lat + :lat_delta
                         AND CAST({lon_col} AS REAL) BETWEEN :lon - :lon_delta AND :lon + :lon_delta
                     """
