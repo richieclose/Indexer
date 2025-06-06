@@ -2505,101 +2505,92 @@ try:
             try:
                 # Clear existing tag filter controls
                 print(f"DEBUG: Clearing {self.tag_filter_layout.count()} existing widgets from layout")
-                for i in reversed(range(self.tag_filter_layout.count())): 
+                for i in reversed(range(self.tag_filter_layout.count())):
                     widget = self.tag_filter_layout.itemAt(i).widget()
                     print(f"  Removing widget {i}: {type(widget).__name__}")
                     widget.setParent(None)
 
-                conn = sqlite3.connect(self.search_db_path.text())
-                cursor = conn.cursor()
+                with sqlite3.connect(self.search_db_path.text()) as conn:
+                    cursor = conn.cursor()
 
-                # Get all columns that start with "Tag_"
-                cursor.execute("PRAGMA table_info(images)")
-                columns = [row[1] for row in cursor.fetchall() if row[1].startswith('Tag_')]
+                    # Get all columns that start with "Tag_"
+                    cursor.execute("PRAGMA table_info(images)")
+                    columns = [row[1] for row in cursor.fetchall() if row[1].startswith('Tag_')]
 
-                if not columns:
-                    info_label = QLabel("No tag columns found in database.")
-                    self.tag_filter_layout.addWidget(info_label)
-                    conn.close()
-                    return
+                    if not columns:
+                        info_label = QLabel("No tag columns found in database.")
+                        self.tag_filter_layout.addWidget(info_label)
+                        return
 
-                # For each tag column, get unique values and create filter controls
-                self.tag_filters = {}  # Store filter controls
-                
-                for tag_column in sorted(columns):
-                    # Get unique values for this tag
-                    cursor.execute(f"SELECT DISTINCT {tag_column} FROM images WHERE {tag_column} IS NOT NULL ORDER BY {tag_column}")
-                    unique_values = [row[0] for row in cursor.fetchall()]
-                    
-                    if not unique_values:
-                        continue
+                    # For each tag column, get unique values and create filter controls
+                    self.tag_filters = {}
 
-                    # Create filter controls for this tag
-                    tag_layout = QHBoxLayout()
-                    
-                    # Tag label (remove Tag_ prefix for display)
-                    display_name = tag_column[4:] if tag_column.startswith('Tag_') else tag_column
-                    tag_label = QLabel(f"{display_name}:")
-                    tag_label.setFixedWidth(150)  # Increased from 120 to 150
-                    
-                    # Combo box with values
-                    tag_combo = QComboBox()
-                    tag_combo.setMinimumWidth(200)  # Set minimum width
-                    tag_combo.setMaximumWidth(400)  # Set maximum width to prevent excessive stretching
-                    tag_combo.addItem("Any")  # Default option
-                    tag_combo.addItems(unique_values)
-                    
-                    tag_layout.addWidget(tag_label)
-                    tag_layout.addWidget(tag_combo)
-                    tag_layout.addStretch()
-                    
-                    # Store the combo box for later reference
-                    self.tag_filters[tag_column] = tag_combo
-                    
-                    # Add to container
-                    tag_widget = QWidget()
-                    tag_widget.setLayout(tag_layout)
-                    tag_widget.setMinimumHeight(40)  # Increased from 30 to 40 for better vertical spacing
-                    self.tag_filter_layout.addWidget(tag_widget)
-                    
-                    # Force visibility after adding to layout
-                    tag_widget.setVisible(True)
-                    tag_widget.show()
-                    
-                    print(f"Added tag filter: {display_name} with {len(unique_values)} values")
-                    print(f"Widget added to layout at index {self.tag_filter_layout.count() - 1}")
+                    for tag_column in sorted(columns):
+                        cursor.execute(
+                            f"SELECT DISTINCT {tag_column} FROM images WHERE {tag_column} IS NOT NULL ORDER BY {tag_column}"
+                        )
+                        unique_values = [row[0] for row in cursor.fetchall()]
 
-                print(f"Total widgets in layout: {self.tag_filter_layout.count()}")
-                
-                # Force the container and all children to be visible
-                self.tag_filter_container.setVisible(True)
-                self.tag_filter_container.show()
-                
-                # Force layout updates to make sure the new widgets are visible
-                self.tag_filter_container.updateGeometry()
-                self.tag_filter_layout.update()
-                
-                # Ensure the scroll area is visible and has the right size
-                if hasattr(self, 'tag_filter_scroll'):
-                    self.tag_filter_scroll.setVisible(True)
-                    self.tag_filter_scroll.show()
-                    self.tag_filter_scroll.ensureWidgetVisible(self.tag_filter_container)
-                    print(f"Scroll area size: {self.tag_filter_scroll.size()}")
-                    print(f"Container size: {self.tag_filter_container.size()}")
-                
-                # Try to force a repaint
-                self.tag_filter_container.repaint()
-                self.tag_filter_scroll.repaint()
+                        if not unique_values:
+                            continue
 
-                conn.close()
-                
-                # Debug: Check what widgets are actually in the layout
-                print(f"DEBUG: Final layout check - {self.tag_filter_layout.count()} widgets in layout")
-                for i in range(self.tag_filter_layout.count()):
-                    widget = self.tag_filter_layout.itemAt(i).widget()
-                    print(f"  Widget {i}: {type(widget).__name__} - visible: {widget.isVisible()}")
-                
-                QMessageBox.information(self, "Success", f"Loaded {len(columns)} tag filters.\nLook for dropdown menus in the Tag Filters section below.")
+                        tag_layout = QHBoxLayout()
+
+                        display_name = tag_column[4:] if tag_column.startswith('Tag_') else tag_column
+                        tag_label = QLabel(f"{display_name}:")
+                        tag_label.setFixedWidth(150)
+
+                        tag_combo = QComboBox()
+                        tag_combo.setMinimumWidth(200)
+                        tag_combo.setMaximumWidth(400)
+                        tag_combo.addItem("Any")
+                        tag_combo.addItems(unique_values)
+
+                        tag_layout.addWidget(tag_label)
+                        tag_layout.addWidget(tag_combo)
+                        tag_layout.addStretch()
+
+                        self.tag_filters[tag_column] = tag_combo
+
+                        tag_widget = QWidget()
+                        tag_widget.setLayout(tag_layout)
+                        tag_widget.setMinimumHeight(40)
+                        self.tag_filter_layout.addWidget(tag_widget)
+
+                        tag_widget.setVisible(True)
+                        tag_widget.show()
+
+                        print(f"Added tag filter: {display_name} with {len(unique_values)} values")
+                        print(f"Widget added to layout at index {self.tag_filter_layout.count() - 1}")
+
+                    print(f"Total widgets in layout: {self.tag_filter_layout.count()}")
+
+                    self.tag_filter_container.setVisible(True)
+                    self.tag_filter_container.show()
+
+                    self.tag_filter_container.updateGeometry()
+                    self.tag_filter_layout.update()
+
+                    if hasattr(self, 'tag_filter_scroll'):
+                        self.tag_filter_scroll.setVisible(True)
+                        self.tag_filter_scroll.show()
+                        self.tag_filter_scroll.ensureWidgetVisible(self.tag_filter_container)
+                        print(f"Scroll area size: {self.tag_filter_scroll.size()}")
+                        print(f"Container size: {self.tag_filter_container.size()}")
+
+                    self.tag_filter_container.repaint()
+                    self.tag_filter_scroll.repaint()
+
+                    print(f"DEBUG: Final layout check - {self.tag_filter_layout.count()} widgets in layout")
+                    for i in range(self.tag_filter_layout.count()):
+                        widget = self.tag_filter_layout.itemAt(i).widget()
+                        print(f"  Widget {i}: {type(widget).__name__} - visible: {widget.isVisible()}")
+
+                    QMessageBox.information(
+                        self,
+                        "Success",
+                        f"Loaded {len(columns)} tag filters.\nLook for dropdown menus in the Tag Filters section below."
+                    )
 
             except Exception as e:
                 print(f"Error refreshing tag filters: {str(e)}")
@@ -2751,37 +2742,35 @@ try:
         def load_search_filters(self):
             """Load folder and session filters for radius search."""
             try:
-                conn = sqlite3.connect(self.search_db_path.text())
-                cursor = conn.cursor()
+                with sqlite3.connect(self.search_db_path.text()) as conn:
+                    cursor = conn.cursor()
 
-                # Get unique folders
-                cursor.execute("""
-                    SELECT DISTINCT File_Location_Folder
-                    FROM images
-                    WHERE File_Location_Folder IS NOT NULL
-                    ORDER BY File_Location_Folder
-                """)
-                folders = [row[0] for row in cursor.fetchall()]
-                
-                # Get unique sessions
-                cursor.execute("""
-                    SELECT DISTINCT File_Location_Session
-                    FROM images
-                    WHERE File_Location_Session IS NOT NULL
-                    ORDER BY File_Location_Session
-                """)
-                sessions = [row[0] for row in cursor.fetchall()]
+                    # Get unique folders
+                    cursor.execute("""
+                        SELECT DISTINCT File_Location_Folder
+                        FROM images
+                        WHERE File_Location_Folder IS NOT NULL
+                        ORDER BY File_Location_Folder
+                    """)
+                    folders = [row[0] for row in cursor.fetchall()]
 
-                # Update combo boxes
-                self.search_folder_combo.clear()
-                self.search_folder_combo.addItem("All Folders")
-                self.search_folder_combo.addItems(folders)
-                
-                self.search_session_combo.clear()
-                self.search_session_combo.addItem("All Sessions")
-                self.search_session_combo.addItems(sessions)
+                    # Get unique sessions
+                    cursor.execute("""
+                        SELECT DISTINCT File_Location_Session
+                        FROM images
+                        WHERE File_Location_Session IS NOT NULL
+                        ORDER BY File_Location_Session
+                    """)
+                    sessions = [row[0] for row in cursor.fetchall()]
 
-                conn.close()
+                    # Update combo boxes
+                    self.search_folder_combo.clear()
+                    self.search_folder_combo.addItem("All Folders")
+                    self.search_folder_combo.addItems(folders)
+
+                    self.search_session_combo.clear()
+                    self.search_session_combo.addItem("All Sessions")
+                    self.search_session_combo.addItems(sessions)
 
             except Exception as e:
                 print(f"Error loading filters: {str(e)}")
