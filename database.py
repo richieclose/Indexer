@@ -309,12 +309,20 @@ class DatabaseManager:
                 alt_columns = [col for col in columns if 'altitude' in col.lower() and 'gps' in col.lower()]
                 
                 # Build COALESCE expression to get altitude from any source
-                # Prioritize XML, then EXIF, then JSON
+                # Prioritize XML, then EXIF, then JSON. Each column is wrapped
+                # with NULLIF(TRIM(col), '') so that empty strings do not
+                # prevent fallback to the next source.
                 if alt_columns:
-                    sorted_alt_columns = sorted(alt_columns, key=lambda x: (
-                        0 if x.startswith('XML_') else 1 if x.startswith('EXIF_') else 2
-                    ))
-                    coalesce_expr = f"COALESCE({', '.join(sorted_alt_columns)})"
+                    sorted_alt_columns = sorted(
+                        alt_columns,
+                        key=lambda x: (
+                            0 if x.startswith('XML_')
+                            else 1 if x.startswith('EXIF_')
+                            else 2
+                        ),
+                    )
+                    trimmed_cols = [f"NULLIF(TRIM({col}), '')" for col in sorted_alt_columns]
+                    coalesce_expr = f"COALESCE({', '.join(trimmed_cols)})"
                     
                     query = f"""
                         SELECT path, {lat_col}, {lon_col}, {coalesce_expr} as altitude, 
