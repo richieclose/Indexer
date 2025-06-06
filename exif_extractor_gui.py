@@ -121,7 +121,7 @@ def ensure_tag_columns_exist(db_path: str, tag_names: List[str]) -> bool:
     """Ensure all tag columns exist in the database, creating them if necessary."""
     try:
         conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
+                cursor = conn.cursor()
         
         # Get existing columns
         cursor.execute("PRAGMA table_info(images)")
@@ -946,7 +946,7 @@ try:
 
                 try:
                     conn = sqlite3.connect(self.db_path.text())
-                    cursor = conn.cursor()
+                cursor = conn.cursor()
 
                     # First, detect the actual GPS column names in the database
                     cursor.execute("PRAGMA table_info(images)")
@@ -2510,26 +2510,28 @@ try:
                     print(f"  Removing widget {i}: {type(widget).__name__}")
                     widget.setParent(None)
 
-                conn = sqlite3.connect(self.search_db_path.text())
-                cursor = conn.cursor()
+                with sqlite3.connect(self.search_db_path.text()) as conn:
+                    cursor = conn.cursor()
 
-                # Get all columns that start with "Tag_"
-                cursor.execute("PRAGMA table_info(images)")
-                columns = [row[1] for row in cursor.fetchall() if row[1].startswith('Tag_')]
+                    # Get all columns that start with "Tag_"
+                    cursor.execute("PRAGMA table_info(images)")
+                    columns = [row[1] for row in cursor.fetchall() if row[1].startswith('Tag_')]
 
-                if not columns:
-                    info_label = QLabel("No tag columns found in database.")
-                    self.tag_filter_layout.addWidget(info_label)
-                    conn.close()
-                    return
+                    if not columns:
+                        info_label = QLabel("No tag columns found in database.")
+                        self.tag_filter_layout.addWidget(info_label)
 
-                # For each tag column, get unique values and create filter controls
-                self.tag_filters = {}  # Store filter controls
-                
-                for tag_column in sorted(columns):
-                    # Get unique values for this tag
-                    cursor.execute(f"SELECT DISTINCT {tag_column} FROM images WHERE {tag_column} IS NOT NULL ORDER BY {tag_column}")
-                    unique_values = [row[0] for row in cursor.fetchall()]
+                        return
+
+                    # For each tag column, get unique values and create filter controls
+                    self.tag_filters = {}  # Store filter controls
+
+                    for tag_column in sorted(columns):
+                        # Get unique values for this tag
+                        cursor.execute(
+                            f"SELECT DISTINCT {tag_column} FROM images WHERE {tag_column} IS NOT NULL ORDER BY {tag_column}"
+                        )
+                        unique_values = [row[0] for row in cursor.fetchall()]
                     
                     if not unique_values:
                         continue
@@ -2591,7 +2593,6 @@ try:
                 self.tag_filter_container.repaint()
                 self.tag_filter_scroll.repaint()
 
-                conn.close()
                 
                 # Debug: Check what widgets are actually in the layout
                 print(f"DEBUG: Final layout check - {self.tag_filter_layout.count()} widgets in layout")
@@ -2713,7 +2714,7 @@ try:
                     # Verify the database has the required table
                     try:
                         conn = sqlite3.connect(file_path)
-                        cursor = conn.cursor()
+                cursor = conn.cursor()
                         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='images'")
                         if cursor.fetchone() is None:
                             QMessageBox.warning(self, "Error", "Selected database does not contain the required 'images' table.")
@@ -2751,37 +2752,39 @@ try:
         def load_search_filters(self):
             """Load folder and session filters for radius search."""
             try:
-                conn = sqlite3.connect(self.search_db_path.text())
-                cursor = conn.cursor()
+                with sqlite3.connect(self.search_db_path.text()) as conn:
+                    cursor = conn.cursor()
 
-                # Get unique folders
-                cursor.execute("""
-                    SELECT DISTINCT File_Location_Folder
-                    FROM images
-                    WHERE File_Location_Folder IS NOT NULL
-                    ORDER BY File_Location_Folder
-                """)
-                folders = [row[0] for row in cursor.fetchall()]
-                
-                # Get unique sessions
-                cursor.execute("""
-                    SELECT DISTINCT File_Location_Session
-                    FROM images
-                    WHERE File_Location_Session IS NOT NULL
-                    ORDER BY File_Location_Session
-                """)
-                sessions = [row[0] for row in cursor.fetchall()]
+                    # Get unique folders
+                    cursor.execute(
+                        """
+                        SELECT DISTINCT File_Location_Folder
+                        FROM images
+                        WHERE File_Location_Folder IS NOT NULL
+                        ORDER BY File_Location_Folder
+                        """
+                    )
+                    folders = [row[0] for row in cursor.fetchall()]
 
-                # Update combo boxes
-                self.search_folder_combo.clear()
-                self.search_folder_combo.addItem("All Folders")
-                self.search_folder_combo.addItems(folders)
-                
-                self.search_session_combo.clear()
-                self.search_session_combo.addItem("All Sessions")
-                self.search_session_combo.addItems(sessions)
+                    # Get unique sessions
+                    cursor.execute(
+                        """
+                        SELECT DISTINCT File_Location_Session
+                        FROM images
+                        WHERE File_Location_Session IS NOT NULL
+                        ORDER BY File_Location_Session
+                        """
+                    )
+                    sessions = [row[0] for row in cursor.fetchall()]
 
-                conn.close()
+                    # Update combo boxes
+                    self.search_folder_combo.clear()
+                    self.search_folder_combo.addItem("All Folders")
+                    self.search_folder_combo.addItems(folders)
+
+                    self.search_session_combo.clear()
+                    self.search_session_combo.addItem("All Sessions")
+                    self.search_session_combo.addItems(sessions)
 
             except Exception as e:
                 print(f"Error loading filters: {str(e)}")
@@ -2795,7 +2798,7 @@ try:
 
             try:
                 print(f"Loading images from database: {self.search_db_path.text()}")
-                conn = sqlite3.connect(self.search_db_path.text())
+                with sqlite3.connect(self.search_db_path.text()) as conn::
                 cursor = conn.cursor()
 
                 try:
@@ -2881,14 +2884,8 @@ try:
                                 f"Found {total_matching} images matching your filters, but none of them have GPS coordinates.")
                             results = [(p, 0, None, f, s) for p, f, s in rows]
                             self.handle_search_results(results)
-                finally:
-                    conn.close()
-
-            except Exception as e:
                 print(f"Error in load_images_on_map: {str(e)}")
                 QMessageBox.critical(self, "Error", f"Error loading images: {str(e)}")
-                if 'conn' in locals():
-                    conn.close()
 
         def update_circle_radius(self, value):
             """Update the circle radius on the map."""
