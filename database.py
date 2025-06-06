@@ -134,7 +134,8 @@ class DatabaseManager:
 
                             # If the new column is a Tag column, create an index for it
                             if col_name.startswith("Tag_"):
-                                index_name = f"idx_{self.table_name}_{col_name.lower().replace('"', '')}"  # Sanitize for index name
+                                sanitized_col_part = col_name.lower().replace('"', '')
+                                index_name = f"idx_{self.table_name}_{sanitized_col_part}"  # Sanitize for index name
                                 safe_index_name = f'"{index_name}"'
                                 index_sql = f"CREATE INDEX IF NOT EXISTS {safe_index_name} ON {self.table_name}({safe_col_name})"
                                 try:
@@ -185,7 +186,8 @@ class DatabaseManager:
                     logger.warning(f"Skipping index creation for {col_name} as it does not exist in {self.table_name}.")
                     continue
 
-                index_name = f"idx_{self.table_name}_{col_name.lower().replace('"', '')}"
+                sanitized_col_part = col_name.lower().replace('"', '')
+                index_name = f"idx_{self.table_name}_{sanitized_col_part}"
                 safe_index_name = f'"{index_name}"'
                 sql = f"CREATE INDEX IF NOT EXISTS {safe_index_name} ON {self.table_name}({safe_col_name})"
                 try:
