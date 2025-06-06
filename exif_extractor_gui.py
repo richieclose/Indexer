@@ -44,7 +44,11 @@ from exif_utils import (
 
 # Tags configuration processing functions
 def parse_tags_config(config_path: str) -> Dict[str, str]:
-    """Parse a tags.config file and return a dictionary of tag name -> value pairs."""
+    """Parse a tags.config file and return a dictionary of tag name -> value pairs.
+
+    Tag names are normalized to lowercase before converting them into SQL column
+    names so that different casings of the same tag are treated identically.
+    """
     tags = {}
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
@@ -61,12 +65,12 @@ def parse_tags_config(config_path: str) -> Dict[str, str]:
                         tag_line = line[1:].strip()
                         if ':' in tag_line:
                             tag_name, tag_value = tag_line.split(':', 1)
-                            tag_name = tag_name.strip()
+                            tag_name = tag_name.strip().lower()
                             tag_value = tag_value.strip()
                             
                             # Validate tag name (must be valid SQL column name)
                             if tag_name and tag_name.replace('_', '').replace('-', '').isalnum():
-                                # Convert tag name to valid SQL column name
+                                # Convert tag name to valid SQL column name using lower case
                                 sql_tag_name = f"Tag_{tag_name.replace('-', '_')}"
                                 tags[sql_tag_name] = tag_value
                             else:
@@ -176,8 +180,16 @@ def process_tags_for_batch(image_files: List[str], db_path: str) -> Tuple[Dict[s
     for image_path in image_files:
         tags = find_applicable_tags(image_path)
         if tags:
-            all_image_tags[image_path] = tags
-            all_unique_tag_names_set.update(tags.keys())
+            normalized_tags = {}
+            for t_name, t_value in tags.items():
+                if t_name.startswith('Tag_'):
+                    normalized_name = 'Tag_' + t_name[4:].lower()
+                else:
+                    normalized_name = t_name.lower()
+                normalized_tags[normalized_name] = t_value
+
+            all_image_tags[image_path] = normalized_tags
+            all_unique_tag_names_set.update(normalized_tags.keys())
     
     all_unique_tag_names_list = sorted(list(all_unique_tag_names_set))
     
@@ -1693,6 +1705,7 @@ try:
             tags_info_text = QLabel(
                 "Place 'tags.config' files in your directory structure to automatically tag images.\n"
                 "Format: #Tag_Name: Tag_Value (e.g., #Survey_Type: Pipeline_Inspection)\n"
+                "Tag names are normalized to lower case for consistent column names.\n"
                 "Tags are applied hierarchically - parent directory tags affect all subdirectories."
             )
             tags_info_text.setWordWrap(True)

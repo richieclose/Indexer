@@ -1,5 +1,4 @@
 # Indexer
-
 This project stores image metadata in a SQLite database. The `DatabaseManager`
 class starts with a very small schema and expands it as more images are
 processed.
@@ -34,3 +33,7 @@ Indexes are created automatically for frequently used fields:
 
 These indexes are created when the columns exist so queries remain fast even as
 the schema grows.
+
+Tags defined in `tags.config` files are automatically converted to lower case
+before they are stored in the database. This ensures that tag names are treated
+consistently regardless of how they are written in the configuration files.
