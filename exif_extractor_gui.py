@@ -1437,11 +1437,23 @@ try:
             self.info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             layout.addWidget(self.info_label)
             
+            # Add button layout
+            button_layout = QHBoxLayout()
+            
+            # Add save button
+            save_button = QPushButton("Save Full Resolution Image")
+            save_button.clicked.connect(self.save_full_resolution)
+            save_button.setMaximumWidth(200)  # Limit button width
+            button_layout.addWidget(save_button)
+            
             # Add close button
             close_button = QPushButton("Close")
             close_button.clicked.connect(self.close)
             close_button.setMaximumWidth(200)  # Limit button width
-            layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignCenter)
+            button_layout.addWidget(close_button)
+            
+            # Add button layout centered
+            layout.addLayout(button_layout)
             
             # Load initial image
             self.load_current_image()
@@ -1453,6 +1465,28 @@ try:
             QShortcut(Qt.Key.Key_Left, self, self.show_previous)
             QShortcut(Qt.Key.Key_Right, self, self.show_next)
             QShortcut(Qt.Key.Key_Escape, self, self.close)
+        
+        def save_full_resolution(self):
+            """Save the current image at full resolution."""
+            try:
+                current_image_path = self.all_images[self.current_index]
+                file_name = os.path.basename(current_image_path)
+                
+                # Open file dialog to choose save location
+                save_path, _ = QFileDialog.getSaveFileName(
+                    self,
+                    "Save Full Resolution Image",
+                    file_name,
+                    "Images (*.jpg *.jpeg *.png *.tif *.tiff);;All Files (*.*)"
+                )
+                
+                if save_path:
+                    # Copy the original file to the new location
+                    shutil.copy2(current_image_path, save_path)
+                    QMessageBox.information(self, "Success", "Image saved successfully!")
+                    
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to save image: {str(e)}")
         
         def load_current_image(self):
             """Load and display the current image."""
@@ -1635,7 +1669,7 @@ try:
             self.route_tab = RoutePlaybackWidget()
             
             self.tabs.addTab(self.exif_tab, "EXIF Extraction")
-            self.tabs.addTab(self.search_tab, "Radius Search")
+            self.tabs.addTab(self.search_tab, "Search")
             self.tabs.addTab(self.route_tab, "Route Playback")
             
             self.setup_exif_ui()
@@ -1992,10 +2026,12 @@ try:
                     # Tag label (remove Tag_ prefix for display)
                     display_name = tag_column[4:] if tag_column.startswith('Tag_') else tag_column
                     tag_label = QLabel(f"{display_name}:")
-                    tag_label.setFixedWidth(120)
+                    tag_label.setFixedWidth(150)  # Increased from 120 to 150
                     
                     # Combo box with values
                     tag_combo = QComboBox()
+                    tag_combo.setMinimumWidth(200)  # Set minimum width
+                    tag_combo.setMaximumWidth(400)  # Set maximum width to prevent excessive stretching
                     tag_combo.addItem("Any")  # Default option
                     tag_combo.addItems(unique_values)
                     
@@ -2009,7 +2045,7 @@ try:
                     # Add to container
                     tag_widget = QWidget()
                     tag_widget.setLayout(tag_layout)
-                    tag_widget.setMinimumHeight(30)  # Ensure minimum height
+                    tag_widget.setMinimumHeight(40)  # Increased from 30 to 40 for better vertical spacing
                     self.tag_filter_layout.addWidget(tag_widget)
                     
                     # Force visibility after adding to layout
@@ -2248,99 +2284,129 @@ try:
                 conn = sqlite3.connect(self.search_db_path.text())
                 cursor = conn.cursor()
                 
-                # First, detect the actual GPS column names in the database
-                cursor.execute("PRAGMA table_info(images)")
-                columns = [row[1] for row in cursor.fetchall()]
-                
-                # Find GPS latitude and longitude columns
-                lat_columns = [col for col in columns if 'latitude' in col.lower() and 'gps' in col.lower()]
-                lon_columns = [col for col in columns if 'longitude' in col.lower() and 'gps' in col.lower()]
-                
-                if not lat_columns or not lon_columns:
-                    QMessageBox.warning(self, "Error", "No GPS coordinate columns found in database.")
-                    return
-                
-                # Find matching GPS column pairs (same prefix)
-                gps_pairs = []
-                for lat_col in lat_columns:
-                    for lon_col in lon_columns:
-                        lat_prefix = lat_col.split('_')[0] + '_'
-                        lon_prefix = lon_col.split('_')[0] + '_'
-                        if lat_prefix == lon_prefix:
-                            gps_pairs.append((lat_col, lon_col))
-                
-                print(f"Found GPS column pairs: {gps_pairs}")
-                
-                if not gps_pairs:
-                    QMessageBox.warning(self, "Error", "No matching GPS coordinate column pairs found.")
-                    return
-
-                all_coordinates = []
-                processed_paths = set()  # Track processed paths to avoid duplicates
-                
-                # Query each GPS column pair and combine results
-                for lat_col, lon_col in gps_pairs:
-                    print(f"Querying GPS columns: {lat_col}, {lon_col}")
+                try:
+                    # First, detect the actual GPS column names in the database
+                    cursor.execute("PRAGMA table_info(images)")
+                    columns = [row[1] for row in cursor.fetchall()]
                     
-                    # Build query with detected column names
-                    query = f"""
-                        SELECT {lat_col}, {lon_col}, path,
-                               File_Location_Folder, File_Location_Session
-                        FROM images 
-                        WHERE {lat_col} IS NOT NULL 
-                        AND {lon_col} IS NOT NULL
-                        AND {lat_col} != ''
-                        AND {lon_col} != ''
-                    """
-                    params = []
-
-                    # Add folder filter
-                    selected_folder = self.search_folder_combo.currentText()
-                    if selected_folder != "All Folders":
-                        query += " AND File_Location_Folder = ?"
-                        params.append(selected_folder)
-
-                    # Add session filter
-                    selected_session = self.search_session_combo.currentText()
-                    if selected_session != "All Sessions":
-                        query += " AND File_Location_Session = ?"
-                        params.append(selected_session)
-
-                    # Add tag filter conditions
-                    tag_conditions, tag_params = self.get_tag_filter_conditions()
-                    if tag_conditions:
-                        query += " AND " + " AND ".join(tag_conditions)
-                        params.extend(tag_params)
+                    # Find GPS latitude and longitude columns
+                    lat_columns = [col for col in columns if 'latitude' in col.lower() and 'gps' in col.lower()]
+                    lon_columns = [col for col in columns if 'longitude' in col.lower() and 'gps' in col.lower()]
                     
-                    cursor.execute(query, params)
+                    if not lat_columns or not lon_columns:
+                        QMessageBox.warning(self, "Error", "No GPS coordinate columns found in database.")
+                        return
                     
-                    for lat, lon, path, folder, session in cursor.fetchall():
-                        # Skip if we've already processed this image path
-                        if path in processed_paths:
-                            continue
+                    # Find matching GPS column pairs (same prefix)
+                    gps_pairs = []
+                    for lat_col in lat_columns:
+                        for lon_col in lon_columns:
+                            lat_prefix = lat_col.split('_')[0] + '_'
+                            lon_prefix = lon_col.split('_')[0] + '_'
+                            if lat_prefix == lon_prefix:
+                                gps_pairs.append((lat_col, lon_col))
+                    
+                    print(f"Found GPS column pairs: {gps_pairs}")
+                    
+                    if not gps_pairs:
+                        QMessageBox.warning(self, "Error", "No matching GPS coordinate column pairs found.")
+                        return
+
+                    all_coordinates = []
+                    processed_paths = set()  # Track processed paths to avoid duplicates
+                    
+                    # Query each GPS column pair and combine results
+                    for lat_col, lon_col in gps_pairs:
+                        print(f"Querying GPS columns: {lat_col}, {lon_col}")
                         
-                        try:
-                            lat = float(lat)
-                            lon = float(lon)
-                            all_coordinates.append((lat, lon, f"{path} ({folder}/{session})"))
-                            processed_paths.add(path)
-                            print(f"Found image at coordinates: {lat}, {lon}")
-                        except (ValueError, TypeError) as e:
-                            print(f"Error processing coordinates for {path}: {str(e)}")
-                            continue
-                
-                conn.close()
-                
-                if all_coordinates:
-                    print(f"Loading {len(all_coordinates)} markers on map from {len(gps_pairs)} GPS column pairs")
-                    self.map_widget.add_image_markers(all_coordinates)
-                    QMessageBox.information(self, "Success", f"Loaded {len(all_coordinates)} images on the map")
-                else:
-                    QMessageBox.warning(self, "Warning", "No images with GPS coordinates found matching the filters.")
+                        # Build query with detected column names
+                        query = f"""
+                            SELECT {lat_col}, {lon_col}, path,
+                                   File_Location_Folder, File_Location_Session
+                            FROM images 
+                            WHERE {lat_col} IS NOT NULL 
+                            AND {lon_col} IS NOT NULL
+                            AND {lat_col} != ''
+                            AND {lon_col} != ''
+                        """
+                        params = []
+
+                        # Add folder filter
+                        selected_folder = self.search_folder_combo.currentText()
+                        if selected_folder != "All Folders":
+                            query += " AND File_Location_Folder = ?"
+                            params.append(selected_folder)
+
+                        # Add session filter
+                        selected_session = self.search_session_combo.currentText()
+                        if selected_session != "All Sessions":
+                            query += " AND File_Location_Session = ?"
+                            params.append(selected_session)
+
+                        # Add tag filter conditions
+                        tag_conditions, tag_params = self.get_tag_filter_conditions()
+                        if tag_conditions:
+                            query += " AND " + " AND ".join(tag_conditions)
+                            params.extend(tag_params)
+                        
+                        cursor.execute(query, params)
+                        
+                        for lat, lon, path, folder, session in cursor.fetchall():
+                            # Skip if we've already processed this image path
+                            if path in processed_paths:
+                                continue
+                            
+                            try:
+                                lat = float(lat)
+                                lon = float(lon)
+                                all_coordinates.append((lat, lon, f"{path} ({folder}/{session})"))
+                                processed_paths.add(path)
+                                print(f"Found image at coordinates: {lat}, {lon}")
+                            except (ValueError, TypeError) as e:
+                                print(f"Error processing coordinates for {path}: {str(e)}")
+                                continue
+                    
+                    if all_coordinates:
+                        print(f"Loading {len(all_coordinates)} markers on map from {len(gps_pairs)} GPS column pairs")
+                        self.map_widget.add_image_markers(all_coordinates)
+                        QMessageBox.information(self, "Success", f"Loaded {len(all_coordinates)} images on the map")
+                    else:
+                        # Check if we had any results before GPS filtering
+                        query = "SELECT COUNT(*) FROM images WHERE 1=1"
+                        params = []
+                        
+                        # Add folder filter
+                        if selected_folder != "All Folders":
+                            query += " AND File_Location_Folder = ?"
+                            params.append(selected_folder)
+
+                        # Add session filter
+                        if selected_session != "All Sessions":
+                            query += " AND File_Location_Session = ?"
+                            params.append(selected_session)
+
+                        # Add tag filter conditions
+                        if tag_conditions:
+                            query += " AND " + " AND ".join(tag_conditions)
+                            params.extend(tag_params)
+                        
+                        cursor.execute(query, params)
+                        total_matching = cursor.fetchone()[0]
+                        
+                        if total_matching == 0:
+                            QMessageBox.warning(self, "Warning", "No images found matching the selected tag combination.")
+                        else:
+                            QMessageBox.warning(self, "Warning", 
+                                f"Found {total_matching} images matching your filters, but none of them have GPS coordinates. "
+                                "GPS coordinates are required to display images on the map.")
+                finally:
+                    conn.close()
             
             except Exception as e:
                 print(f"Error in load_images_on_map: {str(e)}")
                 QMessageBox.critical(self, "Error", f"Error loading images: {str(e)}")
+                if 'conn' in locals():
+                    conn.close()
 
         def update_circle_radius(self, value):
             """Update the circle radius on the map."""
