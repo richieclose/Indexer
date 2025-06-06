@@ -35,6 +35,10 @@ from config import (
     GPS_DATE_STAMP, GPS_LATITUDE_REF, GPS_LONGITUDE_REF,
     GPS_ALTITUDE_REF, MAIN_WINDOW_MIN_WIDTH, MAIN_WINDOW_MIN_HEIGHT
 )
+
+# Define supported image extensions
+SUPPORTED_IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.tiff', '.bmp')
+
 from workers import ExifExtractorWorker, BatchProcessWorker, RadiusSearchWorker # Added RadiusSearchWorker
 from exif_utils import (
     convert_to_degrees, format_gps_timestamp, get_gps_info, 
@@ -287,9 +291,9 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                            QProgressBar, QTableWidget, QTableWidgetItem, 
                            QMessageBox, QCheckBox, QHeaderView, QTabWidget,
                            QLineEdit, QSpinBox, QDoubleSpinBox, QSplitter,
-                           QGroupBox, QSlider, QComboBox, QScrollArea, QGridLayout, QDialog, QFormLayout)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, QObject, pyqtSlot, QTimer
-from PyQt6.QtGui import QImage, QPixmap
+                           QGroupBox, QSlider, QComboBox, QScrollArea, QGridLayout, QDialog, QFormLayout, QTreeView)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, QObject, pyqtSlot, QTimer, QDir
+from PyQt6.QtGui import QImage, QPixmap, QStandardItemModel, QStandardItem
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebChannel import QWebChannel
 from PyQt6.QtGui import QShortcut
@@ -717,18 +721,6 @@ try:
 
         def select_database(self):
             """Select and load images from a database file."""
-            file_path, _ = QFileDialog.getOpenFileName(
-                self,
-                "Select Database File",
-                "",
-                "SQLite Database (*.db)"
-            )
-            if file_path:
-                self.db_path.setText(file_path)
-                self.load_images_from_database()
-
-        def load_images_from_database(self):
-            """Load all images from the database into the selection table."""
             try:
                 conn = sqlite3.connect(self.db_path.text())
                 cursor = conn.cursor()
@@ -1666,6 +1658,494 @@ try:
         def set_selected(self, selected):
             self.checkbox.setChecked(selected)
 
+    class TagConfigTab(QWidget):
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setup_ui()
+            self.current_folder = None
+            self.image_files = []
+            self.selected_images = set()
+            self.root_folder = None
+
+        def setup_ui(self):
+            """Setup the tag configuration tab UI."""
+            layout = QHBoxLayout(self)
+
+            # Left panel - Explorer view
+            left_panel = QWidget()
+            left_layout = QVBoxLayout(left_panel)
+
+            # Root folder selection
+            root_layout = QHBoxLayout()
+            root_label = QLabel("Root Folder:")
+            self.root_path = QLabel("Not selected")
+            root_btn = QPushButton("Browse")
+            root_btn.clicked.connect(self.select_root_folder)
+            root_layout.addWidget(root_label)
+            root_layout.addWidget(self.root_path)
+            root_layout.addWidget(root_btn)
+            left_layout.addLayout(root_layout)
+
+            # Folder tree view using QStandardItemModel instead
+            self.folder_tree = QTreeView()
+            self.folder_model = QStandardItemModel()
+            self.folder_model.setHorizontalHeaderLabels(['Folders'])
+            self.folder_tree.setModel(self.folder_model)
+            self.folder_tree.clicked.connect(self.on_folder_selected)
+            left_layout.addWidget(self.folder_tree)
+
+            # Add database selection
+            db_layout = QHBoxLayout()
+            db_label = QLabel("Database:")
+            self.db_path = QLabel("Not selected")
+            db_btn = QPushButton("Browse")
+            db_btn.clicked.connect(self.select_database)
+            db_layout.addWidget(db_label)
+            db_layout.addWidget(self.db_path)
+            db_layout.addWidget(db_btn)
+            left_layout.addLayout(db_layout)
+
+            layout.addWidget(left_panel, stretch=1)
+
+            # Right panel - Split for thumbnails and tag config
+            right_panel = QWidget()
+            right_layout = QVBoxLayout(right_panel)
+
+            # Current folder label
+            self.current_folder_label = QLabel("No folder selected")
+            self.current_folder_label.setStyleSheet("font-weight: bold;")
+            right_layout.addWidget(self.current_folder_label)
+
+            # Thumbnail section
+            self.thumbnail_scroll = QScrollArea()
+            self.thumbnail_scroll.setWidgetResizable(True)
+            self.thumbnail_container = QWidget()
+            self.thumbnail_layout = QGridLayout(self.thumbnail_container)
+            self.thumbnail_scroll.setWidget(self.thumbnail_container)
+            right_layout.addWidget(QLabel("Images in Selected Folder:"))
+            right_layout.addWidget(self.thumbnail_scroll, stretch=2)
+
+            # Tag configuration section
+            tag_group = QGroupBox("Tag Configuration")
+            tag_layout = QVBoxLayout()
+
+            # Existing tags list with editing enabled
+            tag_layout.addWidget(QLabel("Existing Tags:"))
+            self.tag_list = QTableWidget()
+            self.tag_list.setColumnCount(2)
+            self.tag_list.setHorizontalHeaderLabels(["Tag Name", "Value"])
+            self.tag_list.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            self.tag_list.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+            # Enable editing
+            self.tag_list.setEditTriggers(QTableWidget.EditTrigger.DoubleClicked | 
+                                        QTableWidget.EditTrigger.EditKeyPressed)
+            self.tag_list.itemChanged.connect(self.on_tag_edited)
+            tag_layout.addWidget(self.tag_list)
+
+            # Delete tag button
+            self.delete_tag_btn = QPushButton("Delete Selected Tag")
+            self.delete_tag_btn.clicked.connect(self.delete_selected_tag)
+            self.delete_tag_btn.setEnabled(False)
+            tag_layout.addWidget(self.delete_tag_btn)
+
+            # Enable delete button when selection changes
+            self.tag_list.itemSelectionChanged.connect(self.on_tag_selection_changed)
+
+            # Tag input fields
+            tag_input_layout = QFormLayout()
+            self.tag_name = QLineEdit()
+            self.tag_value = QLineEdit()
+            tag_input_layout.addRow("Tag Name:", self.tag_name)
+            tag_input_layout.addRow("Tag Value:", self.tag_value)
+            tag_layout.addLayout(tag_input_layout)
+
+            # Buttons
+            button_layout = QHBoxLayout()
+            self.save_btn = QPushButton("Save Tag Config")
+            self.save_btn.clicked.connect(self.save_tag_config)
+            self.index_btn = QPushButton("Index Folder")
+            self.index_btn.clicked.connect(self.index_folder)
+            button_layout.addWidget(self.save_btn)
+            button_layout.addWidget(self.index_btn)
+            tag_layout.addLayout(button_layout)
+
+            tag_group.setLayout(tag_layout)
+            right_layout.addWidget(tag_group)
+
+            layout.addWidget(right_panel, stretch=2)
+
+        def select_database(self):
+            """Select database file."""
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select Database File",
+                "",
+                "SQLite Database (*.db)"
+            )
+            if file_path:
+                self.db_path.setText(file_path)
+
+        def populate_folder_tree(self, path):
+            """Populate the folder tree with the directory structure."""
+            self.folder_model.clear()
+            self.folder_model.setHorizontalHeaderLabels(['Folders'])
+            root_item = QStandardItem(os.path.basename(path))
+            root_item.setData(path, Qt.ItemDataRole.UserRole)
+            self.folder_model.appendRow(root_item)
+            self._add_folders(root_item, path)
+            self.folder_tree.expandAll()
+
+        def _add_folders(self, parent_item, parent_path):
+            """Recursively add folders to the tree."""
+            try:
+                for entry in os.scandir(parent_path):
+                    if entry.is_dir() and not entry.name.startswith('.'):
+                        child_item = QStandardItem(entry.name)
+                        child_item.setData(entry.path, Qt.ItemDataRole.UserRole)
+                        parent_item.appendRow(child_item)
+                        self._add_folders(child_item, entry.path)
+            except PermissionError:
+                # Skip folders we don't have permission to access
+                pass
+
+        def select_root_folder(self):
+            """Open dialog to select root folder."""
+            folder = QFileDialog.getExistingDirectory(self, "Select Root Folder")
+            if folder:
+                self.root_folder = folder
+                self.root_path.setText(folder)
+                self.populate_folder_tree(folder)
+
+        def on_folder_selected(self, index):
+            """Handle folder selection in the tree view."""
+            item = self.folder_model.itemFromIndex(index)
+            if item:
+                folder_path = item.data(Qt.ItemDataRole.UserRole)
+                self.current_folder = folder_path
+                self.current_folder_label.setText(f"Current Folder: {folder_path}")
+                self.load_folder_images()
+                self.load_existing_tags()
+
+        def load_folder_images(self):
+            """Load images from the selected folder."""
+            if not self.current_folder:
+                return
+
+            # Clear existing thumbnails
+            for i in reversed(range(self.thumbnail_layout.count())):
+                self.thumbnail_layout.itemAt(i).widget().setParent(None)
+
+            # Get all image files in the folder
+            self.image_files = []
+            for file in os.listdir(self.current_folder):
+                if file.lower().endswith(SUPPORTED_IMAGE_EXTENSIONS):
+                    self.image_files.append(os.path.join(self.current_folder, file))
+
+            # Create thumbnails
+            num_columns = max(1, self.thumbnail_container.width() // 220)
+            current_row = 0
+            current_col = 0
+
+            for img_path in self.image_files:
+                thumbnail = ThumbnailWidget(
+                    img_path,
+                    0,  # distance not relevant here
+                    None,  # altitude not relevant here
+                    os.path.basename(self.current_folder)
+                )
+                thumbnail.clicked.connect(self.show_full_image)
+                self.thumbnail_layout.addWidget(thumbnail, current_row, current_col)
+
+                current_col += 1
+                if current_col >= num_columns:
+                    current_col = 0
+                    current_row += 1
+
+        def show_full_image(self, image_path):
+            """Show full-size image in a dialog."""
+            dialog = ImagePreviewDialog(image_path, self.image_files, self)
+            dialog.exec()
+
+        def load_existing_tags(self):
+            """Load and display existing tags from tags.config file."""
+            # Temporarily disconnect the itemChanged signal to prevent triggering edits during loading
+            if hasattr(self, 'tag_list'):
+                self.tag_list.itemChanged.disconnect(self.on_tag_edited)
+
+            try:
+                self.tag_list.setRowCount(0)  # Clear existing rows
+                
+                if not self.current_folder:
+                    return
+                    
+                config_path = os.path.join(self.current_folder, "tags.config")
+                if not os.path.exists(config_path):
+                    return
+                    
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith('#') and ':' in line:
+                            # Remove the leading # and split on first colon
+                            tag_line = line[1:].strip()
+                            if ':' in tag_line:
+                                tag_name, tag_value = tag_line.split(':', 1)
+                                tag_name = tag_name.strip()
+                                tag_value = tag_value.strip()
+                                
+                                if tag_name and tag_value:  # Only add if both are non-empty
+                                    # Add to table
+                                    row = self.tag_list.rowCount()
+                                    self.tag_list.insertRow(row)
+                                    self.tag_list.setItem(row, 0, QTableWidgetItem(tag_name))
+                                    self.tag_list.setItem(row, 1, QTableWidgetItem(tag_value))
+            except Exception as e:
+                logger.error(f"Error loading tags: {str(e)}")
+                QMessageBox.warning(self, "Warning", f"Failed to load existing tags: {str(e)}")
+            finally:
+                # Reconnect the itemChanged signal
+                if hasattr(self, 'tag_list'):
+                    self.tag_list.itemChanged.connect(self.on_tag_edited)
+
+        def save_tag_config(self):
+            """Save the tag configuration file."""
+            if not self.current_folder:
+                QMessageBox.warning(self, "Error", "Please select a folder first.")
+                return
+
+            # Only validate input fields if they contain data (attempting to add a new tag)
+            new_tag_name = self.tag_name.text().strip()
+            new_tag_value = self.tag_value.text().strip()
+            
+            if new_tag_name or new_tag_value:
+                # If either field has data, both must be filled
+                if not new_tag_name or not new_tag_value:
+                    QMessageBox.warning(self, "Error", "Please enter both tag name and value.")
+                    return
+
+                try:
+                    config_path = os.path.join(self.current_folder, "tags.config")
+                    
+                    # Read existing content
+                    existing_lines = []
+                    if os.path.exists(config_path):
+                        with open(config_path, 'r', encoding='utf-8') as f:
+                            existing_lines = [line.strip() for line in f if line.strip()]
+
+                    # Add new tag
+                    new_tag_line = f"#{new_tag_name}: {new_tag_value}"
+                    
+                    # Check if tag already exists and update it
+                    tag_updated = False
+                    for i, line in enumerate(existing_lines):
+                        if line.startswith(f"#{new_tag_name}:"):
+                            existing_lines[i] = new_tag_line
+                            tag_updated = True
+                            break
+                    
+                    if not tag_updated:
+                        existing_lines.append(new_tag_line)
+
+                    # Write back all lines
+                    with open(config_path, 'w', encoding='utf-8') as f:
+                        f.write('\n'.join(existing_lines) + '\n')
+
+                    # Clear input fields
+                    self.tag_name.clear()
+                    self.tag_value.clear()
+
+                    QMessageBox.information(self, "Success", "Tag configuration saved successfully!")
+
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"Failed to save tag configuration: {str(e)}")
+
+            # Refresh the display
+            self.load_existing_tags()
+
+        def index_folder(self):
+            """Index the current folder and apply tags to the database."""
+            if not self.current_folder:
+                QMessageBox.warning(self, "Error", "Please select a folder first.")
+                return
+
+            if not self.db_path.text() or self.db_path.text() == "Not selected":
+                QMessageBox.warning(self, "Error", "Please select a database file first.")
+                return
+
+            try:
+                # Get all image files and their tags
+                image_files = []
+                for file in os.listdir(self.current_folder):
+                    if file.lower().endswith(SUPPORTED_IMAGE_EXTENSIONS):
+                        image_files.append(os.path.join(self.current_folder, file))
+
+                if not image_files:
+                    QMessageBox.warning(self, "Warning", "No images found in the selected folder.")
+                    return
+
+                # Get tags from config file
+                config_path = os.path.join(self.current_folder, "tags.config")
+                if not os.path.exists(config_path):
+                    QMessageBox.warning(self, "Warning", "No tags.config file found in the selected folder.")
+                    return
+
+                # Read tags in the correct format
+                tags = {}
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith('#') and ':' in line:
+                            # Remove the leading # and split on first colon
+                            tag_line = line[1:].strip()
+                            if ':' in tag_line:
+                                tag_name, tag_value = tag_line.split(':', 1)
+                                tag_name = tag_name.strip()
+                                tag_value = tag_value.strip()
+                                # Convert tag name to database column format
+                                sql_tag_name = f"Tag_{tag_name.replace('-', '_')}"
+                                tags[sql_tag_name] = tag_value
+
+                # Start the batch processing
+                self.batch_worker = BatchProcessWorker(
+                    image_files,
+                    self.db_path.text(),
+                    {},  # No field mapping needed
+                    [],  # No field selection needed
+                    True,  # Always append mode
+                    {path: tags for path in image_files},  # Apply tags to all images
+                    list(tags.keys())  # List of tag names
+                )
+                self.batch_worker.finished.connect(lambda: QMessageBox.information(self, "Success", "Folder indexed successfully!"))
+                self.batch_worker.error.connect(lambda msg: QMessageBox.critical(self, "Error", f"Indexing failed: {msg}"))
+                self.batch_worker.start()
+
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to index folder: {str(e)}")
+
+        def on_tag_selection_changed(self):
+            """Enable/disable delete button based on selection."""
+            self.delete_tag_btn.setEnabled(len(self.tag_list.selectedItems()) > 0)
+
+        def delete_selected_tag(self):
+            """Delete the selected tag from the table and config file."""
+            selected_rows = set(item.row() for item in self.tag_list.selectedItems())
+            if not selected_rows:
+                return
+
+            reply = QMessageBox.question(
+                self,
+                "Confirm Delete",
+                "Are you sure you want to delete the selected tag(s)?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+
+            if reply == QMessageBox.StandardButton.Yes:
+                try:
+                    # Get all existing tags
+                    tags = []
+                    for row in range(self.tag_list.rowCount()):
+                        if row not in selected_rows:  # Skip selected (to be deleted) rows
+                            name_item = self.tag_list.item(row, 0)
+                            value_item = self.tag_list.item(row, 1)
+                            
+                            # Skip if either item is None
+                            if name_item is None or value_item is None:
+                                continue
+                                
+                            tag_name = name_item.text().strip()
+                            tag_value = value_item.text().strip()
+                            
+                            # Only add if both name and value are non-empty
+                            if tag_name and tag_value:
+                                tags.append((tag_name, tag_value))
+
+                    # Save remaining tags back to file
+                    self.save_tags_to_file(tags)
+
+                    # Refresh the display
+                    self.load_existing_tags()
+
+                except Exception as e:
+                    logger.error(f"Error deleting tag: {str(e)}")
+                    QMessageBox.critical(self, "Error", f"Failed to delete tag(s): {str(e)}")
+
+        def on_tag_edited(self, item):
+            """Handle when a tag is edited in the table."""
+            if not self.current_folder:
+                return
+
+            # Get the current row's tag name and value
+            row = item.row()
+            name_item = self.tag_list.item(row, 0)
+            value_item = self.tag_list.item(row, 1)
+            
+            # Store the current value before disconnecting the signal
+            self._last_valid_value = item.text()
+
+            # Temporarily disconnect to prevent recursive calls
+            self.tag_list.itemChanged.disconnect(self.on_tag_edited)
+
+            try:
+                # Get the edited values
+                tag_name = name_item.text().strip() if name_item else ""
+                tag_value = value_item.text().strip() if value_item else ""
+
+                # Validate both fields are non-empty
+                if not tag_name or not tag_value:
+                    QMessageBox.warning(self, "Invalid Input", "Both tag name and value must be non-empty.")
+                    # Restore previous value
+                    item.setText(self._last_valid_value)
+                    return
+
+                # Validate tag name (only if tag name was edited)
+                if item.column() == 0:
+                    if not tag_name.replace('_', '').replace('-', '').isalnum():
+                        QMessageBox.warning(self, "Invalid Tag Name",
+                                         "Tag names must contain only letters, numbers, underscores, or hyphens.")
+                        # Restore previous value
+                        item.setText(self._last_valid_value)
+                        return
+
+                # Get all current tags
+                tags = []
+                for row in range(self.tag_list.rowCount()):
+                    name_item = self.tag_list.item(row, 0)
+                    value_item = self.tag_list.item(row, 1)
+                    
+                    # Skip if either item is None
+                    if name_item is None or value_item is None:
+                        continue
+                        
+                    tag_name = name_item.text().strip()
+                    tag_value = value_item.text().strip()
+                    
+                    # Only add if both name and value are non-empty
+                    if tag_name and tag_value:
+                        tags.append((tag_name, tag_value))
+
+                # Save all tags back to file
+                self.save_tags_to_file(tags)
+
+            except Exception as e:
+                logger.error(f"Error editing tag: {str(e)}")
+                QMessageBox.critical(self, "Error", f"Failed to save tag changes: {str(e)}")
+            finally:
+                # Reconnect signal
+                self.tag_list.itemChanged.connect(self.on_tag_edited)
+
+        def save_tags_to_file(self, tags):
+            """Save the given tags to the tags.config file."""
+            if not self.current_folder:
+                return
+
+            try:
+                config_path = os.path.join(self.current_folder, "tags.config")
+                with open(config_path, 'w', encoding='utf-8') as f:
+                    for tag_name, tag_value in tags:
+                        f.write(f"#{tag_name}: {tag_value}\n")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save tags: {str(e)}")
+
     class MainWindow(QMainWindow):
         def __init__(self):
             super().__init__()
@@ -1673,32 +2153,32 @@ try:
             self.setMinimumSize(MAIN_WINDOW_MIN_WIDTH, MAIN_WINDOW_MIN_HEIGHT)
             self.image_files = []
             self.current_preview_index = -1
-            self.db_manager = None # Initialize db_manager
-            self.selected_fields = [] # Initialize selected_fields for batch processing
-            self.field_mapping_config = {} # Initialize field_mapping_config
-            self.load_field_mapping() # Load mapping configuration on startup
+            self.db_manager = None
+            self.selected_fields = []
+            self.field_mapping_config = {}
+            self.load_field_mapping()
 
-            # Create tab widget first
+            # Create tab widget
             self.tabs = QTabWidget()
-
-            # Setup main UI components
             self.setCentralWidget(self.tabs)
-            
+
             # Create tabs content widgets
             self.exif_tab = QWidget()
             self.search_tab = QWidget()
             self.route_tab = RoutePlaybackWidget()
-            
+            self.tag_config_tab = TagConfigTab()  # Add new tab
+
             self.tabs.addTab(self.exif_tab, "EXIF Extraction")
             self.tabs.addTab(self.search_tab, "Search")
             self.tabs.addTab(self.route_tab, "Route Playback")
-            
+            self.tabs.addTab(self.tag_config_tab, "Tag Configuration")  # Add new tab
+
             self.setup_exif_ui()
             self.setup_search_ui()
-            
+
             # Set EXIF Extraction as the default tab
             self.tabs.setCurrentWidget(self.exif_tab)
-            self._is_manual_coord_update = False # Initialize the flag
+            self._is_manual_coord_update = False
 
         def setup_exif_ui(self):
             """Setup the EXIF extraction tab UI."""

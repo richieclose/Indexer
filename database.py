@@ -104,24 +104,29 @@ class DatabaseManager:
             raise
 
     def add_columns_if_needed(self, new_columns: Dict[str, str]):
-        """Add new columns to the table if they don't exist."""
-        if not new_columns:
-            return
-
+        """Add columns to the database table if they don't already exist.
+        
+        Args:
+            new_columns: Dictionary mapping column names to their SQL types
+        """
         try:
-            with self.get_connection() as conn:
+            with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
+                
+                # Get existing columns
                 cursor.execute(f"PRAGMA table_info({self.table_name})")
                 existing_columns = {row[1] for row in cursor.fetchall()}
                 
                 columns_actually_added = False
+                
+                # Add each new column if it doesn't exist
                 for col_name, col_type in new_columns.items():
                     if col_name not in existing_columns:
-                        safe_col_name = f'"{col_name}"' # Quote column name for safety
-                        # Ensure col_type is valid; default to TEXT if None/empty
-                        actual_col_type = col_type if col_type and col_type.strip() else "TEXT"
-                        
+                        # Sanitize column name for SQL
+                        safe_col_name = f'"{col_name}"'
+                        actual_col_type = col_type if col_type else 'TEXT'
                         alter_sql = f"ALTER TABLE {self.table_name} ADD COLUMN {safe_col_name} {actual_col_type}"
+                        
                         try:
                             cursor.execute(alter_sql)
                             logger.info(f"Added column: {safe_col_name} with type {actual_col_type} to table {self.table_name}")
@@ -129,7 +134,7 @@ class DatabaseManager:
 
                             # If the new column is a Tag column, create an index for it
                             if col_name.startswith("Tag_"):
-                                index_name = f"idx_{self.table_name}_{col_name.lower().replace('"', '')}" # Sanitize for index name
+                                index_name = f"idx_{self.table_name}_{col_name.lower().replace('"', '')}"  # Sanitize for index name
                                 safe_index_name = f'"{index_name}"'
                                 index_sql = f"CREATE INDEX IF NOT EXISTS {safe_index_name} ON {self.table_name}({safe_col_name})"
                                 try:
@@ -138,7 +143,11 @@ class DatabaseManager:
                                 except sqlite3.Error as e_idx:
                                     logger.error(f"Error creating index {safe_index_name} for tag column {safe_col_name}: {e_idx}")
                         except sqlite3.Error as e_alter:
-                            logger.error(f"Error adding column {safe_col_name} with type {actual_col_type}: {e_alter}")
+                            if "duplicate column name" in str(e_alter):
+                                # This is actually an expected case - the column already exists
+                                logger.debug(f"Column {safe_col_name} already exists in table {self.table_name}")
+                            else:
+                                logger.error(f"Error adding column {safe_col_name} with type {actual_col_type}: {e_alter}")
                 
                 if columns_actually_added:
                     conn.commit()
