@@ -1,7 +1,6 @@
-Pillow>=10.0.0
-PyQt6>=6.5.0
-PyQt6-WebEngine>=6.5.0
-geopy>=2.4.0
-folium>=0.14.0
-plotly>=5.18.0
-sqlite3>=3.35.0 
+PyQt6>=6.4.0
+PyQt6-WebEngine>=6.4.0
+Pillow>=9.0.0
+geopy>=2.3.0
+plotly>=5.13.0
+folium>=0.14.0 
