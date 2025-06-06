@@ -287,7 +287,14 @@ class RadiusSearchWorker(QThread):
             # Convert radius to degrees (approximate)
             # 1 degree of latitude = ~111km
             lat_delta = self.radius / 111000  # Convert meters to degrees
-            lon_delta = lat_delta / abs(math.cos(math.radians(self.latitude)))  # Changed os.cos to math.cos and os.radians to math.radians
+
+            # Avoid division by zero near the poles when computing longitude delta
+            lat_rad = math.radians(self.latitude)
+            cos_lat = math.cos(lat_rad)
+            if abs(cos_lat) < 1e-6:
+                cos_lat = 1e-6
+
+            lon_delta = lat_delta / abs(cos_lat)
             
             # Get images in bounding box
             results = self.db_manager.get_images_in_radius(
