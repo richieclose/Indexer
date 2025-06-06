@@ -472,7 +472,50 @@ class DatabaseManager:
                         return lat_candidates[0], lon_candidates[0]
 
                 return None, None
-                
+
         except sqlite3.Error as e:
             logger.error(f"Error detecting GPS columns: {str(e)}")
-            return None, None 
+            return None, None
+
+    def get_images_matching_filters(
+        self,
+        folder: Optional[str] = None,
+        session: Optional[str] = None,
+        tag_filters: Optional[Dict[str, str]] = None,
+    ) -> List[Tuple[str, str, str]]:
+        """Fetch images that match folder/session/tag filters regardless of GPS data.
+
+        Args:
+            folder: Optional folder filter.
+            session: Optional session filter.
+            tag_filters: Optional dictionary mapping tag columns to values.
+
+        Returns:
+            List of tuples ``(path, folder, session)`` for matching images.
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+
+                query = f"SELECT path, File_Location_Folder, File_Location_Session FROM {self.table_name} WHERE 1=1"
+                params: Dict[str, Any] = {}
+
+                if folder:
+                    query += " AND File_Location_Folder = :folder"
+                    params["folder"] = folder
+                if session:
+                    query += " AND File_Location_Session = :session"
+                    params["session"] = session
+
+                if tag_filters:
+                    for tag_column, tag_value in tag_filters.items():
+                        param_name = f"tag_{tag_column.lower()}"
+                        query += f" AND {tag_column} = :{param_name}"
+                        params[param_name] = tag_value
+
+                cursor.execute(query, params)
+                return cursor.fetchall()
+
+        except sqlite3.Error as e:
+            logger.error(f"Error getting images by filters: {str(e)}")
+            return []
