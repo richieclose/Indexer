@@ -2350,11 +2350,17 @@ try:
             self.tag_filter_scroll.setWidgetResizable(True)  # Ensure the container can resize
             self.tag_filter_scroll.setFrameStyle(QScrollArea.Shape.StyledPanel)  # Add visible border
             self.tag_filter_scroll.setStyleSheet("QScrollArea { background-color: #f5f5f5; border: 1px solid #ccc; }")  # Light background
+
+            # Search bar for filtering tag controls
+            self.tag_search_input = QLineEdit()
+            self.tag_search_input.setPlaceholderText("Search tags...")
+            self.tag_search_input.textChanged.connect(self.filter_tag_filters)
             
             refresh_tags_btn = QPushButton("Refresh Tag Filters")
             refresh_tags_btn.clicked.connect(self.refresh_tag_filters)
             
             tag_filter_layout.addWidget(refresh_tags_btn)
+            tag_filter_layout.addWidget(self.tag_search_input)
             tag_filter_layout.addWidget(self.tag_filter_scroll)
             tag_filter_group.setLayout(tag_filter_layout)
             left_layout.addWidget(tag_filter_group)
@@ -2555,6 +2561,7 @@ try:
                         tag_widget = QWidget()
                         tag_widget.setLayout(tag_layout)
                         tag_widget.setMinimumHeight(40)
+                        tag_widget.setProperty('tag_name', display_name)
                         self.tag_filter_layout.addWidget(tag_widget)
 
                         tag_widget.setVisible(True)
@@ -2580,6 +2587,10 @@ try:
 
                     self.tag_filter_container.repaint()
                     self.tag_filter_scroll.repaint()
+
+                    # Apply any active text filter after repopulating
+                    if hasattr(self, 'tag_search_input'):
+                        self.filter_tag_filters()
 
                     print(f"DEBUG: Final layout check - {self.tag_filter_layout.count()} widgets in layout")
                     for i in range(self.tag_filter_layout.count()):
@@ -2609,6 +2620,21 @@ try:
                         params.append(selected_value)
             
             return conditions, params
+
+        def filter_tag_filters(self):
+            """Show/hide tag filter widgets based on search text."""
+            if not hasattr(self, 'tag_filter_layout'):
+                return
+
+            text = self.tag_search_input.text().lower() if hasattr(self, 'tag_search_input') else ""
+
+            for i in range(self.tag_filter_layout.count()):
+                widget = self.tag_filter_layout.itemAt(i).widget()
+                if not widget or not widget.property('tag_name'):
+                    continue
+
+                tag_name = widget.property('tag_name').lower()
+                widget.setVisible(text in tag_name)
 
         def _handle_manual_coordinate_update(self):
             """Parse manual coordinate input and update map if valid."""
