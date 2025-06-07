@@ -519,3 +519,70 @@ class DatabaseManager:
         except sqlite3.Error as e:
             logger.error(f"Error getting images by filters: {str(e)}")
             return []
+
+    def search_images_by_tag_value(
+        self,
+        text: str,
+        folder: Optional[str] = None,
+        session: Optional[str] = None,
+    ) -> List[Tuple[str, Optional[float], Optional[float], Optional[float], str, str]]:
+        """Search for images containing the specified tag text.
+
+        Args:
+            text: Tag text to search for (case-insensitive, partial match).
+            folder: Optional folder filter.
+            session: Optional session filter.
+
+        Returns:
+            List of tuples ``(path, latitude, longitude, altitude, folder, session)``.
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+
+                cursor.execute(f"PRAGMA table_info({self.table_name})")
+                columns = [row[1] for row in cursor.fetchall()]
+                tag_columns = [c for c in columns if c.startswith('Tag_')]
+                if not tag_columns:
+                    return []
+
+                lat_col, lon_col = self.get_gps_column_names()
+                alt_columns = [col for col in columns if 'altitude' in col.lower() and 'gps' in col.lower()]
+                if alt_columns:
+                    sorted_alt_columns = sorted(
+                        alt_columns,
+                        key=lambda x: 0 if x.startswith('XML_') else 1 if x.startswith('EXIF_') else 2,
+                    )
+                    trimmed_cols = [f"NULLIF(TRIM({col}), '')" for col in sorted_alt_columns]
+                    coalesce_expr = f"COALESCE({', '.join(trimmed_cols)})"
+                else:
+                    coalesce_expr = 'NULL'
+
+                lat_select = lat_col if lat_col else 'NULL'
+                lon_select = lon_col if lon_col else 'NULL'
+                query = (
+                    f"SELECT path, {lat_select}, {lon_select}, {coalesce_expr} as altitude, "
+                    f"File_Location_Folder, File_Location_Session FROM {self.table_name} WHERE "
+                )
+                params: Dict[str, Any] = {}
+
+                tag_clauses = []
+                for idx, col in enumerate(tag_columns):
+                    p = f"tag{idx}"
+                    tag_clauses.append(f"LOWER({col}) LIKE :{p}")
+                    params[p] = f"%{text.lower()}%"
+                query += " OR ".join(tag_clauses)
+
+                if folder:
+                    query += " AND File_Location_Folder = :folder"
+                    params['folder'] = folder
+                if session:
+                    query += " AND File_Location_Session = :session"
+                    params['session'] = session
+
+                cursor.execute(query, params)
+                return cursor.fetchall()
+
+        except sqlite3.Error as e:
+            logger.error(f"Error searching by tag value: {str(e)}")
+            return []

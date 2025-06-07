@@ -2351,16 +2351,22 @@ try:
             self.tag_filter_scroll.setFrameStyle(QScrollArea.Shape.StyledPanel)  # Add visible border
             self.tag_filter_scroll.setStyleSheet("QScrollArea { background-color: #f5f5f5; border: 1px solid #ccc; }")  # Light background
 
-            # Search bar for filtering tag controls
+            # Search bar to find images by tag text
             self.tag_search_input = QLineEdit()
             self.tag_search_input.setPlaceholderText("Search tags...")
-            self.tag_search_input.textChanged.connect(self.filter_tag_filters)
-            
+            self.tag_search_input.returnPressed.connect(self.perform_tag_search)
+
+            self.tag_search_btn = QPushButton("Search Tags")
+            self.tag_search_btn.clicked.connect(self.perform_tag_search)
+
             refresh_tags_btn = QPushButton("Refresh Tag Filters")
             refresh_tags_btn.clicked.connect(self.refresh_tag_filters)
-            
+
             tag_filter_layout.addWidget(refresh_tags_btn)
-            tag_filter_layout.addWidget(self.tag_search_input)
+            search_layout = QHBoxLayout()
+            search_layout.addWidget(self.tag_search_input)
+            search_layout.addWidget(self.tag_search_btn)
+            tag_filter_layout.addLayout(search_layout)
             tag_filter_layout.addWidget(self.tag_filter_scroll)
             tag_filter_group.setLayout(tag_filter_layout)
             left_layout.addWidget(tag_filter_group)
@@ -2588,9 +2594,7 @@ try:
                     self.tag_filter_container.repaint()
                     self.tag_filter_scroll.repaint()
 
-                    # Apply any active text filter after repopulating
-                    if hasattr(self, 'tag_search_input'):
-                        self.filter_tag_filters()
+                    # No text filter needed; the search bar performs its own query
 
                     print(f"DEBUG: Final layout check - {self.tag_filter_layout.count()} widgets in layout")
                     for i in range(self.tag_filter_layout.count()):
@@ -2621,20 +2625,50 @@ try:
             
             return conditions, params
 
-        def filter_tag_filters(self):
-            """Show/hide tag filter widgets based on search text."""
-            if not hasattr(self, 'tag_filter_layout'):
+
+        def perform_tag_search(self):
+            """Search images by tag text and display results."""
+            if self.search_db_path.text() == "Not selected":
+                QMessageBox.warning(self, "Error", "Please select a database file first.")
                 return
 
-            text = self.tag_search_input.text().lower() if hasattr(self, 'tag_search_input') else ""
+            text = self.tag_search_input.text().strip()
+            if not text:
+                QMessageBox.information(self, "Tag Search", "Enter a tag to search for.")
+                return
 
-            for i in range(self.tag_filter_layout.count()):
-                widget = self.tag_filter_layout.itemAt(i).widget()
-                if not widget or not widget.property('tag_name'):
-                    continue
+            db_manager = DatabaseManager(self.search_db_path.text())
 
-                tag_name = widget.property('tag_name').lower()
-                widget.setVisible(text in tag_name)
+            selected_folder = self.search_folder_combo.currentText()
+            selected_session = self.search_session_combo.currentText()
+
+            folder = selected_folder if selected_folder != "All Folders" else None
+            session = selected_session if selected_session != "All Sessions" else None
+
+            rows = db_manager.search_images_by_tag_value(text, folder, session)
+
+            coordinates = []
+            results = []
+            for path, lat, lon, altitude, folder_val, session_val in rows:
+                if lat is not None and lon is not None and str(lat).strip() != '' and str(lon).strip() != '':
+                    try:
+                        coordinates.append((float(lat), float(lon), f"{path} ({folder_val}/{session_val})"))
+                    except (ValueError, TypeError):
+                        pass
+
+                alt_value = None
+                if altitude is not None and str(altitude).strip() != '':
+                    try:
+                        alt_value = float(str(altitude).replace('m', ''))
+                    except (ValueError, TypeError):
+                        alt_value = None
+
+                results.append((path, 0, alt_value, folder_val, session_val))
+
+            if coordinates:
+                self.map_widget.add_image_markers(coordinates)
+
+            self.handle_search_results(results)
 
         def _handle_manual_coordinate_update(self):
             """Parse manual coordinate input and update map if valid."""
