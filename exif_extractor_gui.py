@@ -6,7 +6,7 @@ import json
 import re
 from datetime import datetime, timedelta
 from fractions import Fraction
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 import logging
 
 # Add the current directory to Python path
@@ -38,6 +38,53 @@ from config import (
 
 # Define supported image extensions
 SUPPORTED_IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.tiff', '.bmp')
+
+# Configuration management functions
+def load_config():
+    """Load configuration from config.json file."""
+    config_file = "config.json"
+    default_config = {
+        "image_directory": "",
+        "database_path": "",
+        "directory_history": []
+    }
+    
+    try:
+        if os.path.exists(config_file):
+            with open(config_file, 'r') as f:
+                config = json.load(f)
+                # Ensure all required keys exist
+                for key, default_value in default_config.items():
+                    if key not in config:
+                        config[key] = default_value
+                return config
+        else:
+            return default_config
+    except Exception as e:
+        print(f"Error loading config: {e}")
+        return default_config
+
+def update_config(key, value):
+    """Update a configuration value and save to file."""
+    config = load_config()
+    config[key] = value
+    
+    # Special handling for directory history
+    if key == "image_directory" and value:
+        if "directory_history" not in config:
+            config["directory_history"] = []
+        
+        # Add to history if not already there
+        if value not in config["directory_history"]:
+            config["directory_history"].insert(0, value)
+            # Keep only last 5 entries
+            config["directory_history"] = config["directory_history"][:5]
+    
+    try:
+        with open("config.json", 'w') as f:
+            json.dump(config, f, indent=2)
+    except Exception as e:
+        print(f"Error saving config: {e}")
 
 from workers import ExifExtractorWorker, BatchProcessWorker, RadiusSearchWorker # Added RadiusSearchWorker
 from database import DatabaseManager
@@ -292,9 +339,9 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                            QProgressBar, QTableWidget, QTableWidgetItem, 
                            QMessageBox, QCheckBox, QHeaderView, QTabWidget,
                            QLineEdit, QSpinBox, QDoubleSpinBox, QSplitter,
-                           QGroupBox, QSlider, QComboBox, QScrollArea, QGridLayout, QDialog, QFormLayout, QTreeView)
+                           QGroupBox, QSlider, QComboBox, QScrollArea, QGridLayout, QDialog, QFormLayout, QTreeView, QButtonGroup, QRadioButton)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, QObject, pyqtSlot, QTimer, QDir
-from PyQt6.QtGui import QImage, QPixmap, QStandardItemModel, QStandardItem
+from PyQt6.QtGui import QImage, QPixmap, QStandardItemModel, QStandardItem, QColor
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebChannel import QWebChannel
 from PyQt6.QtGui import QShortcut
@@ -1532,10 +1579,43 @@ try:
                 
                 # Update counter and info
                 self.counter_label.setText(f"Image {self.current_index + 1} of {len(self.all_images)}")
-                self.info_label.setText(
-                    f"File: {os.path.basename(image_path)}\n"
+                
+                # Build info text with file info and tags
+                info_text = [
+                    f"File: {os.path.basename(image_path)}",
                     f"Size: {pixmap.width()}x{pixmap.height()} pixels"
-                )
+                ]
+                
+                # Add tags if available
+                try:
+                    parent = self.parent()
+                    if hasattr(parent, 'db_path') and parent.db_path.text() != "Not selected":
+                        with sqlite3.connect(parent.db_path.text()) as conn:
+                            cursor = conn.cursor()
+                            # Get all tag columns
+                            cursor.execute("PRAGMA table_info(images)")
+                            tag_columns = [row[1] for row in cursor.fetchall() if row[1].startswith('Tag_')]
+                            
+                            if tag_columns:
+                                # Get tag values for this image
+                                query = f'SELECT {", ".join(tag_columns)} FROM images WHERE path = ?'
+                                cursor.execute(query, (image_path,))
+                                row = cursor.fetchone()
+                                
+                                if row:
+                                    tags = []
+                                    for col, value in zip(tag_columns, row):
+                                        if value:  # Only show non-empty tags
+                                            tag_name = col[4:].replace('_', ' ').title()  # Remove 'Tag_' prefix and format
+                                            tags.append(f"{tag_name}: {value}")
+                                    
+                                    if tags:
+                                        info_text.append("\nTags:")
+                                        info_text.extend(tags)
+                except Exception as e:
+                    print(f"Error loading tags for full image view: {str(e)}")
+                
+                self.info_label.setText("\n".join(info_text))
                 
                 # Update button states
                 self.prev_button.setEnabled(self.current_index > 0)
@@ -1570,6 +1650,8 @@ try:
     class ThumbnailWidget(QWidget):
         clicked = pyqtSignal(str)  # Signal to emit the image path when clicked
         selection_changed = pyqtSignal(str, bool)  # Signal for checkbox changes (path, checked)
+        _thumbnail_cache = {}  # Class-level cache for thumbnails
+        _max_cache_size = 100  # Maximum number of thumbnails to keep in cache
         
         def __init__(self, image_path, distance, altitude, folder_session, parent=None):
             super().__init__(parent)
@@ -1593,19 +1675,35 @@ try:
             self.image_label.setFixedSize(180, 180)
             layout.addWidget(self.image_label)
             
-            # Load and display thumbnail
+            # Load and display thumbnail using cache
             try:
-                with Image.open(image_path) as img:
-                    # Convert to RGB if necessary
-                    if img.mode != 'RGB':
-                        img = img.convert('RGB')
-                    # Create thumbnail
-                    img.thumbnail((180, 180))
-                    # Convert PIL image to QPixmap
-                    qimage = QImage(img.tobytes(), img.width, img.height, img.width * 3, QImage.Format.Format_RGB888)
-                    pixmap = QPixmap.fromImage(qimage)
+                # Check cache first
+                if self.image_path in self._thumbnail_cache:
+                    self.image_label.setPixmap(self._thumbnail_cache[self.image_path])
+                else:
+                    # Load image using Qt
+                    img = QImage(image_path)
+                    if img.isNull():
+                        raise Exception("Failed to load image")
+                    
+                    # Scale image to thumbnail size using fast transformation
+                    scaled_img = img.scaled(180, 180, 
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.FastTransformation)
+                    
+                    # Convert to pixmap
+                    pixmap = QPixmap.fromImage(scaled_img)
+                    
+                    # Cache the thumbnail
+                    if len(self._thumbnail_cache) >= self._max_cache_size:
+                        # Remove oldest item if cache is full
+                        self._thumbnail_cache.pop(next(iter(self._thumbnail_cache)))
+                    self._thumbnail_cache[self.image_path] = pixmap
+                    
+                    # Display the thumbnail
                     self.image_label.setPixmap(pixmap)
             except Exception as e:
+                print(f"Error loading thumbnail for {image_path}: {str(e)}")
                 self.image_label.setText("Error loading\nthumbnail")
             
             # Add info labels
@@ -1633,6 +1731,41 @@ try:
             folder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             info_layout.addWidget(folder_label)
             
+            # Add tags if available
+            try:
+                if hasattr(parent, 'db_path') and parent.db_path.text() != "Not selected":
+                    with sqlite3.connect(parent.db_path.text()) as conn:
+                        cursor = conn.cursor()
+                        # Get all tag columns
+                        cursor.execute("PRAGMA table_info(images)")
+                        tag_columns = [row[1] for row in cursor.fetchall() if row[1].startswith('Tag_')]
+                        
+                        if tag_columns:
+                            # Get tag values for this image
+                            query = f'SELECT {", ".join(tag_columns)} FROM images WHERE path = ?'
+                            cursor.execute(query, (image_path,))
+                            row = cursor.fetchone()
+                            
+                            if row:
+                                tags = []
+                                for col, value in zip(tag_columns, row):
+                                    if value:  # Only show non-empty tags
+                                        tag_name = col[4:].replace('_', ' ').title()  # Remove 'Tag_' prefix and format
+                                        tags.append(f"{tag_name}: {value}")
+                                
+                                if tags:
+                                    # Show up to 2 tags in thumbnail
+                                    visible_tags = tags[:2]
+                                    if len(tags) > 2:
+                                        visible_tags.append("...")
+                                    
+                                    tag_label = QLabel("\n".join(visible_tags))
+                                    tag_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                                    tag_label.setStyleSheet("color: #666; font-size: 10px;")
+                                    info_layout.addWidget(tag_label)
+            except Exception as e:
+                print(f"Error loading tags for thumbnail: {str(e)}")
+            
             layout.addLayout(info_layout)
         
         def mousePressEvent(self, event):
@@ -1659,6 +1792,37 @@ try:
         def set_selected(self, selected):
             self.checkbox.setChecked(selected)
 
+    class ThumbnailLoaderWorker(QThread):
+        """Worker thread for loading thumbnails asynchronously."""
+        thumbnail_ready = pyqtSignal(str, int, int)  # image_path, row, col
+        finished = pyqtSignal()
+
+        def __init__(self, image_files, num_columns):
+            super().__init__()
+            self.image_files = image_files
+            self.num_columns = num_columns
+            self._stop = False
+
+        def run(self):
+            current_row = 0
+            current_col = 0
+
+            for img_path in self.image_files:
+                if self._stop:
+                    break
+                    
+                self.thumbnail_ready.emit(img_path, current_row, current_col)
+                
+                current_col += 1
+                if current_col >= self.num_columns:
+                    current_col = 0
+                    current_row += 1
+
+            self.finished.emit()
+
+        def stop(self):
+            self._stop = True
+
     class TagConfigTab(QWidget):
         def __init__(self, parent=None):
             super().__init__(parent)
@@ -1667,6 +1831,21 @@ try:
             self.image_files = []
             self.selected_images = set()
             self.root_folder = None
+            self.thumbnail_loader = None
+            self.loading_label = None
+            self.page_size = 20  # Number of thumbnails to load per page
+            self.current_page = 0
+            self.total_images = 0
+            
+            # Load initial paths from config
+            config = load_config()
+            if config["image_directory"] and os.path.exists(config["image_directory"]):
+                self.root_folder = config["image_directory"]
+                self.root_path.setText(config["image_directory"])
+                self.populate_folder_tree(config["image_directory"])
+            
+            if config["database_path"] and os.path.exists(config["database_path"]):
+                self.db_path.setText(config["database_path"])
 
         def setup_ui(self):
             """Setup the tag configuration tab UI."""
@@ -1720,10 +1899,18 @@ try:
             upper_right_panel = QWidget()
             upper_right_layout = QVBoxLayout(upper_right_panel)
 
-            # Current folder label
+            # Current folder label and pagination info
+            folder_info_layout = QHBoxLayout()
             self.current_folder_label = QLabel("No folder selected")
             self.current_folder_label.setStyleSheet("font-weight: bold;")
-            upper_right_layout.addWidget(self.current_folder_label)
+            self.pagination_label = QLabel("")
+            folder_info_layout.addWidget(self.current_folder_label)
+            folder_info_layout.addWidget(self.pagination_label)
+            upper_right_layout.addLayout(folder_info_layout)
+
+            # Selection counter
+            self.selection_counter = QLabel("Selected: 0 images")
+            upper_right_layout.addWidget(self.selection_counter)
 
             # Thumbnail section
             self.thumbnail_scroll = QScrollArea()
@@ -1731,8 +1918,19 @@ try:
             self.thumbnail_container = QWidget()
             self.thumbnail_layout = QGridLayout(self.thumbnail_container)
             self.thumbnail_scroll.setWidget(self.thumbnail_container)
+            self.thumbnail_scroll.verticalScrollBar().valueChanged.connect(self._handle_scroll)
             upper_right_layout.addWidget(QLabel("Images in Selected Folder:"))
             upper_right_layout.addWidget(self.thumbnail_scroll)
+
+            # Pagination controls
+            pagination_layout = QHBoxLayout()
+            self.prev_page_btn = QPushButton("Previous")
+            self.prev_page_btn.clicked.connect(self._load_previous_page)
+            self.next_page_btn = QPushButton("Next")
+            self.next_page_btn.clicked.connect(self._load_next_page)
+            pagination_layout.addWidget(self.prev_page_btn)
+            pagination_layout.addWidget(self.next_page_btn)
+            upper_right_layout.addLayout(pagination_layout)
 
             right_splitter.addWidget(upper_right_panel)
 
@@ -1740,45 +1938,78 @@ try:
             tag_group = QGroupBox("Tag Configuration")
             tag_layout = QVBoxLayout()
 
+            # Add tabs for different tag operations
+            tag_tabs = QTabWidget()
+            
+            # Tab for folder-level tags
+            folder_tag_widget = QWidget()
+            folder_tag_layout = QVBoxLayout()
+
             # Existing tags list with editing enabled
-            tag_layout.addWidget(QLabel("Existing Tags:"))
+            folder_tag_layout.addWidget(QLabel("Existing Folder Tags:"))
             self.tag_list = QTableWidget()
             self.tag_list.setColumnCount(2)
             self.tag_list.setHorizontalHeaderLabels(["Tag Name", "Value"])
             self.tag_list.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
             self.tag_list.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-            # Enable editing
             self.tag_list.setEditTriggers(QTableWidget.EditTrigger.DoubleClicked | 
                                         QTableWidget.EditTrigger.EditKeyPressed)
             self.tag_list.itemChanged.connect(self.on_tag_edited)
-            tag_layout.addWidget(self.tag_list)
+            folder_tag_layout.addWidget(self.tag_list)
 
             # Delete tag button
             self.delete_tag_btn = QPushButton("Delete Selected Tag")
             self.delete_tag_btn.clicked.connect(self.delete_selected_tag)
             self.delete_tag_btn.setEnabled(False)
-            tag_layout.addWidget(self.delete_tag_btn)
+            folder_tag_layout.addWidget(self.delete_tag_btn)
 
             # Enable delete button when selection changes
             self.tag_list.itemSelectionChanged.connect(self.on_tag_selection_changed)
 
-            # Tag input fields
-            tag_input_layout = QFormLayout()
+            # Tag input fields for folder
+            folder_input_layout = QFormLayout()
             self.tag_name = QLineEdit()
             self.tag_value = QLineEdit()
-            tag_input_layout.addRow("Tag Name:", self.tag_name)
-            tag_input_layout.addRow("Tag Value:", self.tag_value)
-            tag_layout.addLayout(tag_input_layout)
+            folder_input_layout.addRow("Tag Name:", self.tag_name)
+            folder_input_layout.addRow("Tag Value:", self.tag_value)
+            folder_tag_layout.addLayout(folder_input_layout)
 
-            # Buttons
-            button_layout = QHBoxLayout()
+            # Save button for folder tags
             self.save_btn = QPushButton("Save Tag Config")
             self.save_btn.clicked.connect(self.save_tag_config)
+            folder_tag_layout.addWidget(self.save_btn)
+
+            # Index button for folder tags
             self.index_btn = QPushButton("Index Folder")
             self.index_btn.clicked.connect(self.index_folder)
-            button_layout.addWidget(self.save_btn)
-            button_layout.addWidget(self.index_btn)
-            tag_layout.addLayout(button_layout)
+            folder_tag_layout.addWidget(self.index_btn)
+
+            folder_tag_widget.setLayout(folder_tag_layout)
+            tag_tabs.addTab(folder_tag_widget, "Folder Tags")
+
+            # Tab for image-specific tags
+            image_tag_widget = QWidget()
+            image_tag_layout = QVBoxLayout()
+
+            # Tag input fields for selected images
+            image_tag_layout.addWidget(QLabel("Apply Tags to Selected Images:"))
+            image_input_layout = QFormLayout()
+            self.image_tag_name = QLineEdit()
+            self.image_tag_value = QLineEdit()
+            image_input_layout.addRow("Tag Name:", self.image_tag_name)
+            image_input_layout.addRow("Tag Value:", self.image_tag_value)
+            image_tag_layout.addLayout(image_input_layout)
+
+            # Apply button for image tags
+            self.apply_image_tag_btn = QPushButton("Apply Tag to Selected Images")
+            self.apply_image_tag_btn.clicked.connect(self.apply_tag_to_selected_images)
+            self.apply_image_tag_btn.setEnabled(False)
+            image_tag_layout.addWidget(self.apply_image_tag_btn)
+
+            image_tag_widget.setLayout(image_tag_layout)
+            tag_tabs.addTab(image_tag_widget, "Image Tags")
+
+            tag_layout.addWidget(tag_tabs)
 
             tag_group.setLayout(tag_layout)
             right_splitter.addWidget(tag_group)
@@ -1787,16 +2018,47 @@ try:
             main_splitter.setSizes([300, 700])  # Left panel 300px, Right panel 700px
             right_splitter.setSizes([400, 300])  # Upper panel 400px, Lower panel 300px
 
+        def on_thumbnail_selection_changed(self, image_path, is_selected):
+            """Handle thumbnail selection changes."""
+            if is_selected:
+                self.selected_images.add(image_path)
+            else:
+                self.selected_images.discard(image_path)
+            
+            # Update selection counter and button state
+            self.selection_counter.setText(f"Selected: {len(self.selected_images)} images")
+            self.apply_image_tag_btn.setEnabled(len(self.selected_images) > 0)
+
         def select_database(self):
             """Select database file."""
+            # Load last database path from config
+            config = load_config()
+            start_dir = os.path.dirname(config["database_path"]) if config["database_path"] else ""
+            
             file_path, _ = QFileDialog.getOpenFileName(
                 self,
                 "Select Database File",
-                "",
+                start_dir,
                 "SQLite Database (*.db)"
             )
             if file_path:
                 self.db_path.setText(file_path)
+                # Save to config
+                update_config("database_path", file_path)
+
+        def select_root_folder(self):
+            """Open dialog to select root folder."""
+            # Load last directory from config
+            config = load_config()
+            start_dir = config["image_directory"] if config["image_directory"] else ""
+            
+            folder = QFileDialog.getExistingDirectory(self, "Select Root Folder", start_dir)
+            if folder:
+                self.root_folder = folder
+                self.root_path.setText(folder)
+                self.populate_folder_tree(folder)
+                # Save to config
+                update_config("image_directory", folder)
 
         def populate_folder_tree(self, path):
             """Populate the folder tree with the directory structure."""
@@ -1821,14 +2083,6 @@ try:
                 # Skip folders we don't have permission to access
                 pass
 
-        def select_root_folder(self):
-            """Open dialog to select root folder."""
-            folder = QFileDialog.getExistingDirectory(self, "Select Root Folder")
-            if folder:
-                self.root_folder = folder
-                self.root_path.setText(folder)
-                self.populate_folder_tree(folder)
-
         def on_folder_selected(self, index):
             """Handle folder selection in the tree view."""
             item = self.folder_model.itemFromIndex(index)
@@ -1844,9 +2098,17 @@ try:
             if not self.current_folder:
                 return
 
-            # Clear existing thumbnails
+            # Clear existing thumbnails and selections
             for i in reversed(range(self.thumbnail_layout.count())):
                 self.thumbnail_layout.itemAt(i).widget().setParent(None)
+            
+            # Clear selections when loading a new folder
+            self.selected_images.clear()
+            self.selection_counter.setText("Selected: 0 images")
+            self.apply_image_tag_btn.setEnabled(False)
+
+            # Reset pagination
+            self.current_page = 0
 
             # Get all image files in the folder
             self.image_files = []
@@ -1854,25 +2116,104 @@ try:
                 if file.lower().endswith(SUPPORTED_IMAGE_EXTENSIONS):
                     self.image_files.append(os.path.join(self.current_folder, file))
 
-            # Create thumbnails
+            self.total_images = len(self.image_files)
+            if not self.total_images:
+                self.pagination_label.setText("No images found")
+                self.prev_page_btn.setEnabled(False)
+                self.next_page_btn.setEnabled(False)
+                return
+
+            self._load_current_page()
+
+        def _load_current_page(self):
+            """Load the current page of thumbnails."""
+            # Clear existing thumbnails
+            for i in reversed(range(self.thumbnail_layout.count())):
+                widget = self.thumbnail_layout.itemAt(i).widget()
+                if widget:
+                    widget.setParent(None)
+
+            # Update selection counter
+            self.selection_counter.setText(f"Selected: {len(self.selected_images)} images")
+            self.apply_image_tag_btn.setEnabled(len(self.selected_images) > 0)
+
+            # Stop any existing thumbnail loader
+            if self.thumbnail_loader and self.thumbnail_loader.isRunning():
+                self.thumbnail_loader.stop()
+                self.thumbnail_loader.wait()
+
+            # Calculate page bounds
+            start_idx = self.current_page * self.page_size
+            end_idx = min(start_idx + self.page_size, self.total_images)
+            current_page_files = self.image_files[start_idx:end_idx]
+
+            # Update pagination info
+            total_pages = (self.total_images + self.page_size - 1) // self.page_size
+            self.pagination_label.setText(f"Page {self.current_page + 1} of {total_pages} ({self.total_images} images)")
+            self.prev_page_btn.setEnabled(self.current_page > 0)
+            self.next_page_btn.setEnabled(self.current_page < total_pages - 1)
+
+            # Calculate number of columns
             num_columns = max(1, self.thumbnail_container.width() // 220)
-            current_row = 0
-            current_col = 0
 
-            for img_path in self.image_files:
-                thumbnail = ThumbnailWidget(
-                    img_path,
-                    0,  # distance not relevant here
-                    None,  # altitude not relevant here
-                    os.path.basename(self.current_folder)
-                )
-                thumbnail.clicked.connect(self.show_full_image)
-                self.thumbnail_layout.addWidget(thumbnail, current_row, current_col)
+            # Start thumbnail loader for current page
+            self.thumbnail_loader = ThumbnailLoaderWorker(current_page_files, num_columns)
+            self.thumbnail_loader.thumbnail_ready.connect(self._add_thumbnail)
+            self.thumbnail_loader.finished.connect(self._loading_finished)
+            self.thumbnail_loader.start()
 
-                current_col += 1
-                if current_col >= num_columns:
-                    current_col = 0
-                    current_row += 1
+        def _load_next_page(self):
+            """Load the next page of thumbnails."""
+            total_pages = (self.total_images + self.page_size - 1) // self.page_size
+            if self.current_page < total_pages - 1:
+                self.current_page += 1
+                self._load_current_page()
+
+        def _load_previous_page(self):
+            """Load the previous page of thumbnails."""
+            if self.current_page > 0:
+                self.current_page -= 1
+                self._load_current_page()
+
+        def _handle_scroll(self, value):
+            """Handle scroll events to implement infinite scrolling."""
+            # Prevent multiple scroll handlers from running at once
+            if hasattr(self, '_is_loading_next_page') and self._is_loading_next_page:
+                return
+                
+            scrollbar = self.thumbnail_scroll.verticalScrollBar()
+            # If we're near the bottom and there are more pages, load the next page
+            if value >= scrollbar.maximum() - 100:  # Start loading earlier with smaller page size
+                total_pages = (self.total_images + self.page_size - 1) // self.page_size
+                if self.current_page < total_pages - 1:
+                    self._is_loading_next_page = True
+                    self._load_next_page()
+                    self._is_loading_next_page = False
+
+        def _add_thumbnail(self, img_path, row, col):
+            """Add a single thumbnail to the grid."""
+            if self.loading_label and self.loading_label.parent():
+                self.loading_label.setParent(None)
+
+            thumbnail = ThumbnailWidget(
+                img_path,
+                0,  # distance not relevant here
+                None,  # altitude not relevant here
+                os.path.basename(self.current_folder)
+            )
+            thumbnail.clicked.connect(self.show_full_image)
+            thumbnail.selection_changed.connect(self.on_thumbnail_selection_changed)
+            
+            # Restore selection state if this image was previously selected
+            if img_path in self.selected_images:
+                thumbnail.set_selected(True)
+                
+            self.thumbnail_layout.addWidget(thumbnail, row, col)
+
+        def _loading_finished(self):
+            """Handle completion of thumbnail loading."""
+            if self.loading_label and self.loading_label.parent():
+                self.loading_label.setParent(None)
 
         def show_full_image(self, image_path):
             """Show full-size image in a dialog."""
@@ -1880,7 +2221,7 @@ try:
             dialog.exec()
 
         def load_existing_tags(self):
-            """Load and display existing tags from tags.config file."""
+            """Load and display existing tags from tags.config files in current and parent directories."""
             # Temporarily disconnect the itemChanged signal to prevent triggering edits during loading
             if hasattr(self, 'tag_list'):
                 self.tag_list.itemChanged.disconnect(self.on_tag_edited)
@@ -1890,28 +2231,63 @@ try:
                 
                 if not self.current_folder:
                     return
+
+                # Start from the current folder and walk up to root
+                current_dir = self.current_folder
+                tags_by_level = {}  # Dictionary to store tags by their name with level info
+                
+                while current_dir:
+                    config_path = os.path.join(current_dir, "tags.config")
+                    if os.path.exists(config_path):
+                        try:
+                            rel_path = os.path.relpath(current_dir, self.current_folder)
+                            level = "" if rel_path == "." else rel_path
+                            
+                            with open(config_path, 'r', encoding='utf-8') as f:
+                                for line in f:
+                                    line = line.strip()
+                                    if line.startswith('#') and ':' in line:
+                                        # Remove the leading # and split on first colon
+                                        tag_line = line[1:].strip()
+                                        if ':' in tag_line:
+                                            tag_name, tag_value = tag_line.split(':', 1)
+                                            tag_name = tag_name.strip()
+                                            tag_value = tag_value.strip()
+                                            
+                                            if tag_name and tag_value:  # Only add if both are non-empty
+                                                # Only store if we haven't seen this tag before or if it's from current directory
+                                                if tag_name not in tags_by_level or level == "":
+                                                    tags_by_level[tag_name] = (level, tag_value)
+                        except Exception as e:
+                            logger.error(f"Error reading tags from {config_path}: {str(e)}")
                     
-                config_path = os.path.join(self.current_folder, "tags.config")
-                if not os.path.exists(config_path):
-                    return
-                    
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        line = line.strip()
-                        if line.startswith('#') and ':' in line:
-                            # Remove the leading # and split on first colon
-                            tag_line = line[1:].strip()
-                            if ':' in tag_line:
-                                tag_name, tag_value = tag_line.split(':', 1)
-                                tag_name = tag_name.strip()
-                                tag_value = tag_value.strip()
-                                
-                                if tag_name and tag_value:  # Only add if both are non-empty
-                                    # Add to table
-                                    row = self.tag_list.rowCount()
-                                    self.tag_list.insertRow(row)
-                                    self.tag_list.setItem(row, 0, QTableWidgetItem(tag_name))
-                                    self.tag_list.setItem(row, 1, QTableWidgetItem(tag_value))
+                    # Move up one directory level
+                    parent_dir = os.path.dirname(current_dir)
+                    if parent_dir == current_dir:  # Reached root
+                        break
+                    current_dir = parent_dir
+
+                # Add tags to the table
+                # First add current directory tags
+                for tag_name, (level, value) in sorted(tags_by_level.items()):
+                    if level == "":
+                        row = self.tag_list.rowCount()
+                        self.tag_list.insertRow(row)
+                        self.tag_list.setItem(row, 0, QTableWidgetItem(tag_name))
+                        self.tag_list.setItem(row, 1, QTableWidgetItem(value))
+
+                # Then add inherited tags
+                for tag_name, (level, value) in sorted(tags_by_level.items()):
+                    if level != "":
+                        row = self.tag_list.rowCount()
+                        self.tag_list.insertRow(row)
+                        name_item = QTableWidgetItem(f"{tag_name} (inherited from {level})")
+                        name_item.setForeground(QColor(128, 128, 128))  # Gray color for inherited tags
+                        value_item = QTableWidgetItem(value)
+                        value_item.setForeground(QColor(128, 128, 128))
+                        self.tag_list.setItem(row, 0, name_item)
+                        self.tag_list.setItem(row, 1, value_item)
+
             except Exception as e:
                 logger.error(f"Error loading tags: {str(e)}")
                 QMessageBox.warning(self, "Warning", f"Failed to load existing tags: {str(e)}")
@@ -1921,56 +2297,36 @@ try:
                     self.tag_list.itemChanged.connect(self.on_tag_edited)
 
         def save_tag_config(self):
-            """Save the tag configuration file."""
+            """Save tag configuration to the current folder."""
             if not self.current_folder:
                 QMessageBox.warning(self, "Error", "Please select a folder first.")
                 return
 
-            # Only validate input fields if they contain data (attempting to add a new tag)
-            new_tag_name = self.tag_name.text().strip()
-            new_tag_value = self.tag_value.text().strip()
-            
-            if new_tag_name or new_tag_value:
-                # If either field has data, both must be filled
-                if not new_tag_name or not new_tag_value:
-                    QMessageBox.warning(self, "Error", "Please enter both tag name and value.")
-                    return
-
-                try:
-                    config_path = os.path.join(self.current_folder, "tags.config")
+            try:
+                # Get all tags from the table
+                tags = []
+                for row in range(self.tag_list.rowCount()):
+                    name_item = self.tag_list.item(row, 0)
+                    value_item = self.tag_list.item(row, 1)
                     
-                    # Read existing content
-                    existing_lines = []
-                    if os.path.exists(config_path):
-                        with open(config_path, 'r', encoding='utf-8') as f:
-                            existing_lines = [line.strip() for line in f if line.strip()]
-
-                    # Add new tag
-                    new_tag_line = f"#{new_tag_name}: {new_tag_value}"
+                    # Skip if either item is None
+                    if name_item is None or value_item is None:
+                        continue
+                        
+                    tag_name = name_item.text().strip()
+                    tag_value = value_item.text().strip()
                     
-                    # Check if tag already exists and update it
-                    tag_updated = False
-                    for i, line in enumerate(existing_lines):
-                        if line.startswith(f"#{new_tag_name}:"):
-                            existing_lines[i] = new_tag_line
-                            tag_updated = True
-                            break
-                    
-                    if not tag_updated:
-                        existing_lines.append(new_tag_line)
+                    # Only add if both name and value are non-empty
+                    if tag_name and tag_value:
+                        tags.append((tag_name, tag_value))
 
-                    # Write back all lines
-                    with open(config_path, 'w', encoding='utf-8') as f:
-                        f.write('\n'.join(existing_lines) + '\n')
+                # Save to file
+                self.save_tags_to_file(tags)
 
-                    # Clear input fields
-                    self.tag_name.clear()
-                    self.tag_value.clear()
+                QMessageBox.information(self, "Success", "Tag configuration saved successfully!")
 
-                    QMessageBox.information(self, "Success", "Tag configuration saved successfully!")
-
-                except Exception as e:
-                    QMessageBox.critical(self, "Error", f"Failed to save tag configuration: {str(e)}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save tag configuration: {str(e)}")
 
             # Refresh the display
             self.load_existing_tags()
@@ -1997,12 +2353,52 @@ try:
                     QMessageBox.warning(self, "Warning", "No images found in the selected folder or its subdirectories.")
                     return
 
+                # First, get existing tag values from the database
+                existing_tags = {}
+                try:
+                    with sqlite3.connect(self.db_path.text()) as conn:
+                        cursor = conn.cursor()
+                        # Get all columns that start with 'Tag_'
+                        cursor.execute("PRAGMA table_info(images)")
+                        tag_columns = [row[1] for row in cursor.fetchall() if row[1].startswith('Tag_')]
+                        
+                        if tag_columns:
+                            # Get existing values for all images
+                            placeholders = ','.join('?' * len(image_files))
+                            query = f'SELECT path, {", ".join(tag_columns)} FROM images WHERE path IN ({placeholders})'
+                            cursor.execute(query, image_files)
+                            for row in cursor.fetchall():
+                                path = row[0]
+                                existing_tags[path] = {
+                                    col: value for col, value in zip(tag_columns, row[1:])
+                                    if value is not None  # Only keep non-null values
+                                }
+                except Exception as e:
+                    print(f"Warning: Could not retrieve existing tags: {e}")
+
                 # Process tags for each image using the find_applicable_tags function
                 image_tags = {}
                 for image_path in image_files:
-                    applicable_tags = find_applicable_tags(image_path)
-                    if applicable_tags:
-                        image_tags[image_path] = applicable_tags
+                    # Start with existing tags for this image
+                    combined_tags = existing_tags.get(image_path, {}).copy()
+                    
+                    # Get new tags from tags.config
+                    new_tags = find_applicable_tags(image_path)
+                    if new_tags:
+                        # Normalize new tag names
+                        normalized_new_tags = {}
+                        for t_name, t_value in new_tags.items():
+                            if t_name.startswith('Tag_'):
+                                normalized_name = 'Tag_' + t_name[4:].lower()
+                            else:
+                                normalized_name = t_name.lower()
+                            normalized_new_tags[normalized_name] = t_value
+                        
+                        # Update combined tags, preserving existing values unless overwritten by new ones
+                        combined_tags.update(normalized_new_tags)
+                    
+                    if combined_tags:
+                        image_tags[image_path] = combined_tags
 
                 if not image_tags:
                     QMessageBox.warning(self, "Warning", "No applicable tags found in tags.config files.")
@@ -2020,7 +2416,7 @@ try:
                     {},  # No field mapping needed
                     [],  # No field selection needed
                     True,  # Always append mode
-                    image_tags,  # Apply specific tags to each image
+                    image_tags,  # Apply combined tags to each image
                     list(all_tag_names)  # List of all tag names for column creation
                 )
                 self.batch_worker.finished.connect(lambda: QMessageBox.information(
@@ -2157,6 +2553,105 @@ try:
                         f.write(f"#{tag_name}: {tag_value}\n")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save tags: {str(e)}")
+
+        def apply_tag_to_selected_images(self):
+            """Apply the specified tag to all selected images in the database."""
+            if not self.selected_images:
+                return
+
+            if not self.db_path.text() or self.db_path.text() == "Not selected":
+                QMessageBox.warning(self, "Error", "Please select a database file first.")
+                return
+
+            tag_name = self.image_tag_name.text().strip()
+            tag_value = self.image_tag_value.text().strip()
+
+            if not tag_name or not tag_value:
+                QMessageBox.warning(self, "Error", "Please enter both tag name and value.")
+                return
+
+            # Validate tag name
+            if not tag_name.replace('_', '').replace('-', '').isalnum():
+                QMessageBox.warning(self, "Invalid Tag Name",
+                                 "Tag names must contain only letters, numbers, underscores, or hyphens.")
+                return
+
+            try:
+                # Normalize tag name
+                db_tag_name = f"Tag_{tag_name.lower().replace('-', '_')}"
+                print(f"Applying tag: {db_tag_name} = {tag_value}")
+                print(f"Selected images: {list(self.selected_images)}")
+
+                with sqlite3.connect(self.db_path.text()) as conn:
+                    cursor = conn.cursor()
+
+                    # Ensure the tag column exists
+                    cursor.execute("PRAGMA table_info(images)")
+                    existing_columns = {row[1] for row in cursor.fetchall()}
+                    print(f"Existing columns: {existing_columns}")
+                    
+                    if db_tag_name not in existing_columns:
+                        print(f"Creating new column: {db_tag_name}")
+                        cursor.execute(f'ALTER TABLE images ADD COLUMN [{db_tag_name}] TEXT COLLATE NOCASE')
+
+                    # First verify the images exist in the database
+                    placeholders = ','.join('?' * len(self.selected_images))
+                    cursor.execute(
+                        f'SELECT path FROM images WHERE path IN ({placeholders})',
+                        list(self.selected_images)
+                    )
+                    found_paths = {row[0] for row in cursor.fetchall()}
+                    print(f"Found paths in database: {found_paths}")
+
+                    if not found_paths:
+                        raise Exception("None of the selected images were found in the database. Try indexing the folder first.")
+
+                    missing_paths = self.selected_images - found_paths
+                    if missing_paths:
+                        print(f"Some images not found in database: {missing_paths}")
+
+                    # Update all found images with the new tag
+                    if found_paths:
+                        placeholders = ','.join('?' * len(found_paths))
+                        update_query = f'UPDATE images SET [{db_tag_name}] = ? WHERE path IN ({placeholders})'
+                        params = [tag_value] + list(found_paths)
+                        print(f"Update query: {update_query}")
+                        print(f"Parameters: {params}")
+                        cursor.execute(update_query, params)
+
+                        # Verify the update worked
+                        verify_query = f'SELECT path, [{db_tag_name}] FROM images WHERE path IN ({placeholders})'
+                        cursor.execute(verify_query, list(found_paths))
+                        updated_records = cursor.fetchall()
+                        print(f"Updated records: {updated_records}")
+                        
+                        updated_count = len([r for r in updated_records if r[1] == tag_value])
+                        if updated_count != len(found_paths):
+                            raise Exception(f"Only {updated_count} of {len(found_paths)} images were updated")
+
+                    conn.commit()
+
+                # Clear the input fields
+                self.image_tag_name.clear()
+                self.image_tag_value.clear()
+
+                if missing_paths:
+                    QMessageBox.warning(
+                        self,
+                        "Partial Success",
+                        f"Applied tag '{tag_name}' with value '{tag_value}' to {len(found_paths)} images.\n"
+                        f"Warning: {len(missing_paths)} images were not found in the database. Try indexing the folder first."
+                    )
+                else:
+                    QMessageBox.information(
+                        self,
+                        "Success",
+                        f"Applied tag '{tag_name}' with value '{tag_value}' to {len(found_paths)} images."
+                    )
+
+            except Exception as e:
+                print(f"Error applying tag to images: {str(e)}")
+                QMessageBox.critical(self, "Error", f"Failed to apply tag to images: {str(e)}")
 
     class MainWindow(QMainWindow):
         def __init__(self):
@@ -2332,6 +2827,24 @@ try:
             tag_filter_group = QGroupBox("Tag Filters")
             tag_filter_layout = QVBoxLayout()
             
+            # Add search mode controls
+            search_mode_layout = QHBoxLayout()
+            self.tag_search_mode = QButtonGroup(self)
+            
+            self.filter_mode_radio = QRadioButton("Filter Mode")
+            self.filter_mode_radio.setChecked(True)
+            self.filter_mode_radio.toggled.connect(self.on_search_mode_changed)
+            self.tag_search_mode.addButton(self.filter_mode_radio)
+            
+            self.search_mode_radio = QRadioButton("Search Mode")
+            self.tag_search_mode.addButton(self.search_mode_radio)
+            
+            search_mode_layout.addWidget(self.filter_mode_radio)
+            search_mode_layout.addWidget(self.search_mode_radio)
+            search_mode_layout.addStretch()
+            
+            tag_filter_layout.addLayout(search_mode_layout)
+            
             # Dynamic tag filter controls will be added here when database is loaded
             self.tag_filter_container = QWidget()
             self.tag_filter_layout = QVBoxLayout(self.tag_filter_container)
@@ -2354,7 +2867,8 @@ try:
             # Search bar for filtering tag controls
             self.tag_search_input = QLineEdit()
             self.tag_search_input.setPlaceholderText("Search tags...")
-            self.tag_search_input.textChanged.connect(self.filter_tag_filters)
+            self.tag_search_input.textChanged.connect(self.on_tag_filter_changed)  # For filter mode
+            self.tag_search_input.returnPressed.connect(self.on_tag_search_submitted)  # For search mode
             
             refresh_tags_btn = QPushButton("Refresh Tag Filters")
             refresh_tags_btn.clicked.connect(self.refresh_tag_filters)
@@ -2364,11 +2878,6 @@ try:
             tag_filter_layout.addWidget(self.tag_filter_scroll)
             tag_filter_group.setLayout(tag_filter_layout)
             left_layout.addWidget(tag_filter_group)
-
-            # Load images button
-            load_btn = QPushButton("Load Images on Map")
-            load_btn.clicked.connect(self.load_images_on_map)
-            left_layout.addWidget(load_btn)
 
             # Manual Coordinate Entry
             manual_coord_group = QGroupBox("Manual Coordinate Entry")
@@ -2440,7 +2949,7 @@ try:
             left_layout.addWidget(altitude_group)
 
             # Search button
-            self.search_btn = QPushButton("Search and Preview")
+            self.search_btn = QPushButton("Search by Location")
             self.search_btn.clicked.connect(self.perform_radius_search)
             self.search_btn.setEnabled(False)  # Initially disabled
             left_layout.addWidget(self.search_btn)
@@ -2551,6 +3060,7 @@ try:
                         tag_combo.setMaximumWidth(400)
                         tag_combo.addItem("Any")
                         tag_combo.addItems(unique_values)
+                        tag_combo.currentTextChanged.connect(self.on_tag_filter_value_changed)
 
                         tag_layout.addWidget(tag_label)
                         tag_layout.addWidget(tag_combo)
@@ -2810,6 +3320,11 @@ try:
 
             try:
                 print(f"Loading images from database: {self.search_db_path.text()}")
+                print("Getting tag filter conditions...")
+                tag_conditions, tag_params = self.get_tag_filter_conditions()
+                print(f"Tag conditions: {tag_conditions}")
+                print(f"Tag parameters: {tag_params}")
+                
                 conn = sqlite3.connect(self.search_db_path.text())
                 cursor = conn.cursor()
 
@@ -2868,34 +3383,45 @@ try:
                             except (ValueError, TypeError):
                                 continue
 
-                    if all_coordinates:
-                        print(f"Loading {len(all_coordinates)} markers on map")
-                        self.map_widget.add_image_markers(all_coordinates)
-                        QMessageBox.information(self, "Success", f"Loaded {len(all_coordinates)} images on the map")
+                    # Always get all matching images for thumbnails
+                    query = "SELECT path, File_Location_Folder, File_Location_Session FROM images WHERE 1=1"
+                    params = []
+                    if selected_folder != "All Folders":
+                        query += " AND File_Location_Folder = ?"
+                        params.append(selected_folder)
+                    if selected_session != "All Sessions":
+                        query += " AND File_Location_Session = ?"
+                        params.append(selected_session)
+                    if tag_conditions:
+                        query += " AND " + " AND ".join(tag_conditions)
+                        params.extend(tag_params)
+
+                    print(f"Executing query: {query}")
+                    print(f"With parameters: {params}")
+                    
+                    cursor.execute(query, params)
+                    rows = cursor.fetchall()
+                    total_matching = len(rows)
+
+                    if total_matching == 0:
+                        QMessageBox.warning(self, "Warning", "No images found matching the selected tag combination.")
                     else:
-                        query = "SELECT path, File_Location_Folder, File_Location_Session FROM images WHERE 1=1"
-                        params = []
-                        if selected_folder != "All Folders":
-                            query += " AND File_Location_Folder = ?"
-                            params.append(selected_folder)
-                        if selected_session != "All Sessions":
-                            query += " AND File_Location_Session = ?"
-                            params.append(selected_session)
-                        if tag_conditions:
-                            query += " AND " + " AND ".join(tag_conditions)
-                            params.extend(tag_params)
-
-                        cursor.execute(query, params)
-                        rows = cursor.fetchall()
-                        total_matching = len(rows)
-
-                        if total_matching == 0:
-                            QMessageBox.warning(self, "Warning", "No images found matching the selected tag combination.")
+                        # Add map markers if we have coordinates
+                        if all_coordinates:
+                            print(f"Loading {len(all_coordinates)} markers on map")
+                            self.map_widget.add_image_markers(all_coordinates)
+                            
+                        # Always show thumbnails for all matching images
+                        results = [(p, 0, None, f, s) for p, f, s in rows]
+                        self.handle_search_results(results)
+                        
+                        # Show appropriate message
+                        if all_coordinates:
+                            QMessageBox.information(self, "Success", 
+                                f"Found {total_matching} images, {len(all_coordinates)} with GPS coordinates.")
                         else:
                             QMessageBox.warning(self, "Warning",
                                 f"Found {total_matching} images matching your filters, but none of them have GPS coordinates.")
-                            results = [(p, 0, None, f, s) for p, f, s in rows]
-                            self.handle_search_results(results)
                 finally:
                     conn.close()
 
@@ -3026,41 +3552,20 @@ try:
 
         def handle_search_results(self, results):
             """Display search results as thumbnails."""
+            print(f"Handling {len(results)} search results")
+            
             # Clear existing thumbnails and selections
+            print("Clearing existing thumbnails...")
             for i in reversed(range(self.thumbnail_layout.count())): 
                 self.thumbnail_layout.itemAt(i).widget().setParent(None)
             self.selected_images.clear()
             self.selection_counter.setText("Selected: 0 images")
             
             if not results:
-                db_manager = DatabaseManager(self.search_db_path.text())
-                filters = getattr(self, 'active_search_filters', {
-                    'folder': None,
-                    'session': None,
-                    'tag_filters': {},
-                })
-                missing_gps = db_manager.get_images_matching_filters(
-                    filters.get('folder'),
-                    filters.get('session'),
-                    filters.get('tag_filters'),
-                )
-
-                if missing_gps:
-                    QMessageBox.warning(
-                        self,
-                        "Warning",
-                        f"Found {len(missing_gps)} images matching your filters, but none of them have GPS coordinates."
-                    )
-                    placeholder_results = [
-                        (path, 0, None, folder, session)
-                        for path, folder, session in missing_gps
-                    ]
-                    # Recurse with placeholder results so thumbnails are displayed
-                    self.handle_search_results(placeholder_results)
-                else:
-                    QMessageBox.information(self, "Search Results", "No images found matching the criteria.")
-                    self.select_all_btn.setEnabled(False)
-                    self.save_selected_btn.setEnabled(False)
+                print("No results to display")
+                QMessageBox.information(self, "Search Results", "No images found matching the criteria.")
+                self.select_all_btn.setEnabled(False)
+                self.save_selected_btn.setEnabled(False)
                 return
             
             # Store image paths for navigation
@@ -3071,43 +3576,51 @@ try:
             current_row = 0
             current_col = 0
             
-            for img_path, distance, altitude, folder, session in results:
-                # Create thumbnail widget
-                thumbnail = ThumbnailWidget(
-                    img_path,
-                    distance * 1000,  # Convert km to meters
-                    altitude,
-                    f"{folder}/{session}"
-                )
-                # Connect signals
-                thumbnail.clicked.connect(self.show_full_image)
-                thumbnail.selection_changed.connect(self.on_thumbnail_selection_changed)
-                
-                # Add to grid
-                self.thumbnail_layout.addWidget(thumbnail, current_row, current_col)
-                
-                # Update grid position
-                current_col += 1
-                if current_col >= num_columns:
-                    current_col = 0
-                    current_row += 1
+            print("Creating thumbnails...")
+            self.search_progress.setRange(0, len(results))
+            self.search_progress.show()
+            
+            for index, (img_path, distance, altitude, folder, session) in enumerate(results):
+                try:
+                    # Update progress
+                    self.search_progress.setValue(index + 1)
+                    QApplication.processEvents()  # Allow UI updates
+                    
+                    # Create thumbnail widget
+                    thumbnail = ThumbnailWidget(
+                        img_path,
+                        distance * 1000,  # Convert km to meters
+                        altitude,
+                        f"{folder}/{session}"
+                    )
+                    # Connect signals
+                    thumbnail.clicked.connect(self.show_full_image)
+                    thumbnail.selection_changed.connect(self.on_thumbnail_selection_changed)
+                    
+                    # Add to grid
+                    self.thumbnail_layout.addWidget(thumbnail, current_row, current_col)
+                    
+                    # Update grid position
+                    current_col += 1
+                    if current_col >= num_columns:
+                        current_col = 0
+                        current_row += 1
+                        
+                    # Process events every 10 thumbnails to keep UI responsive
+                    if index % 10 == 0:
+                        QApplication.processEvents()
+                        
+                except Exception as e:
+                    print(f"Error creating thumbnail for {img_path}: {str(e)}")
+                    continue
+            
+            print("Finished creating thumbnails")
             
             # Enable selection controls
             self.select_all_btn.setEnabled(True)
             self.save_selected_btn.setEnabled(False)  # Will be enabled when images are selected
             
             QMessageBox.information(self, "Search Complete", f"Found {len(results)} images matching the criteria.")
-
-        def on_thumbnail_selection_changed(self, image_path, is_selected):
-            """Handle thumbnail selection changes."""
-            if is_selected:
-                self.selected_images.add(image_path)
-            else:
-                self.selected_images.discard(image_path)
-            
-            # Update counter and save button
-            self.selection_counter.setText(f"Selected: {len(self.selected_images)} images")
-            self.save_selected_btn.setEnabled(len(self.selected_images) > 0)
 
         def toggle_select_all(self):
             """Toggle selection of all thumbnails."""
@@ -3372,6 +3885,198 @@ try:
             QMessageBox.warning(self, "Error", message)
             self.preview_btn.setEnabled(True)
             self.process_btn.setEnabled(True)
+
+        def on_search_mode_changed(self):
+            """Handle changes in the tag search mode."""
+            is_filter_mode = self.filter_mode_radio.isChecked()
+            
+            # Update UI based on mode
+            self.tag_filter_scroll.setVisible(is_filter_mode)
+            self.tag_search_input.setPlaceholderText(
+                "Filter visible tags..." if is_filter_mode else "Search for tags in database..."
+            )
+            
+            # Clear the search input when switching modes
+            self.tag_search_input.clear()
+            
+            # Show/hide the refresh button based on mode
+            refresh_btn = None
+            for i in range(self.tag_filter_layout.count()):
+                widget = self.tag_filter_layout.itemAt(i).widget()
+                if isinstance(widget, QPushButton) and widget.text() == "Refresh Tag Filters":
+                    refresh_btn = widget
+                    break
+            
+            if refresh_btn:
+                refresh_btn.setVisible(is_filter_mode)
+
+        def on_tag_filter_changed(self):
+            """Handle changes in the tag search input for filter mode."""
+            if self.filter_mode_radio.isChecked():
+                self.filter_tag_filters()
+
+        def on_tag_search_submitted(self):
+            """Handle Enter key press in the search input."""
+            if not self.filter_mode_radio.isChecked():
+                self.search_tags_in_database()
+
+        def search_tags_in_database(self):
+            """Search for tags directly in the database and update map if coordinates are available."""
+            search_text = self.tag_search_input.text().strip().lower()
+            
+            if not search_text or self.search_db_path.text() == "Not selected":
+                return
+                
+            # Clear existing thumbnails
+            for i in reversed(range(self.thumbnail_layout.count())): 
+                widget = self.thumbnail_layout.itemAt(i).widget()
+                if widget:
+                    widget.setParent(None)
+            
+            # Clear existing map markers and reset view
+            self.map_widget.create_map()  # This will reset the map view
+            
+            try:
+                with sqlite3.connect(self.search_db_path.text()) as conn:
+                    cursor = conn.cursor()
+                    
+                    # Get all tag columns
+                    cursor.execute("PRAGMA table_info(images)")
+                    columns = cursor.fetchall()
+                    tag_columns = [row[1] for row in columns if row[1].startswith('Tag_')]
+                    
+                    if not tag_columns:
+                        return
+                    
+                    # Find GPS coordinate columns (prioritize XML > EXIF > JSON)
+                    all_columns = [row[1] for row in columns]
+                    lat_col = lon_col = None
+                    for prefix in ["XML_", "EXIF_", "JSON_"]:
+                        possible_lat = next((c for c in all_columns if c.startswith(prefix) and "latitude" in c.lower()), None)
+                        possible_lon = next((c for c in all_columns if c.startswith(prefix) and "longitude" in c.lower()), None)
+                        if possible_lat and possible_lon:
+                            lat_col, lon_col = possible_lat, possible_lon
+                            break
+                    
+                    # Build query to search across all tag columns
+                    conditions = []
+                    params = []
+                    for col in tag_columns:
+                        conditions.append(f"LOWER({col}) LIKE ?")
+                        params.append(f"%{search_text}%")
+                    
+                    # Base query including GPS coordinates if available
+                    select_cols = ["path", "File_Location_Folder", "File_Location_Session"]
+                    if lat_col and lon_col:
+                        select_cols.extend([lat_col, lon_col])
+                    
+                    # Get folder and session filters
+                    selected_folder = self.search_folder_combo.currentText()
+                    selected_session = self.search_session_combo.currentText()
+                    
+                    query = f"""
+                        SELECT DISTINCT {', '.join(select_cols)}
+                        FROM images
+                        WHERE ({" OR ".join(conditions)})
+                    """
+                    
+                    # Add folder filter
+                    if selected_folder != "All Folders":
+                        query += " AND File_Location_Folder = ?"
+                        params.append(selected_folder)
+                    
+                    # Add session filter
+                    if selected_session != "All Sessions":
+                        query += " AND File_Location_Session = ?"
+                        params.append(selected_session)
+                    
+                    cursor.execute(query, params)
+                    results = cursor.fetchall()
+                    
+                    if results:
+                        # Process results and update map if coordinates are available
+                        formatted_results = []
+                        map_coordinates = []
+                        
+                        for row in results:
+                            path = row[0]
+                            folder = row[1]
+                            session = row[2]
+                            
+                            # Check for valid GPS coordinates
+                            lat = lon = None
+                            if lat_col and lon_col and len(row) > 3:
+                                try:
+                                    # Handle both string and float inputs
+                                    lat_val = str(row[3]) if isinstance(row[3], float) else row[3]
+                                    lon_val = str(row[4]) if isinstance(row[4], float) else row[4]
+                                    
+                                    lat = float(lat_val) if lat_val and str(lat_val).strip() else None
+                                    lon = float(lon_val) if lon_val and str(lon_val).strip() else None
+                                    
+                                    if lat is not None and lon is not None:
+                                        map_coordinates.append((lat, lon, path))
+                                except (ValueError, TypeError, AttributeError):
+                                    pass
+                            
+                            formatted_results.append((path, 0, None, folder, session))
+                        
+                        # Update map if we have coordinates
+                        if map_coordinates:
+                            # Calculate center point for map
+                            avg_lat = sum(coord[0] for coord in map_coordinates) / len(map_coordinates)
+                            avg_lon = sum(coord[1] for coord in map_coordinates) / len(map_coordinates)
+                            
+                            # Update map view with new markers
+                            self.map_widget.create_map((avg_lat, avg_lon))
+                            self.map_widget.add_image_markers(map_coordinates)
+                        
+                        # Clear selection tracking
+                        self.selected_images.clear()
+                        self.selection_counter.setText("Selected: 0 images")
+                        
+                        # Update thumbnails with new results
+                        self.handle_search_results(formatted_results)
+                        
+                        # Enable/disable buttons based on results
+                        self.select_all_btn.setEnabled(bool(formatted_results))
+                        self.save_selected_btn.setEnabled(False)
+                    else:
+                        QMessageBox.information(self, "Search Results", "No images found with matching tags.")
+                        self.handle_search_results([])  # Clear any existing results
+                        
+            except sqlite3.Error as e:
+                print(f"Error searching tags in database: {e}")
+                QMessageBox.critical(self, "Error", f"Error searching tags: {str(e)}")
+
+        def on_tag_filter_value_changed(self, value):
+            """Handle changes in tag filter dropdown values."""
+            # Clear existing thumbnails
+            for i in reversed(range(self.thumbnail_layout.count())): 
+                widget = self.thumbnail_layout.itemAt(i).widget()
+                if widget:
+                    widget.setParent(None)
+            
+            # Clear existing map markers and reset view
+            self.map_widget.create_map()
+            
+            # Show progress in status bar
+            self.search_progress.setRange(0, 0)  # Indeterminate progress
+            self.search_progress.show()
+            QApplication.processEvents()  # Ensure UI updates
+            
+            try:
+                # Trigger a new search with current filters
+                self.load_images_on_map()
+            finally:
+                # Reset progress bar
+                self.search_progress.setRange(0, 100)
+                self.search_progress.hide()
+            # Clear existing map markers and reset view
+            self.map_widget.create_map()
+            
+            # Trigger a new search with current filters
+            self.load_images_on_map()
 
     class MappingDialog(QDialog):
         def __init__(self, parent=None):
