@@ -275,14 +275,14 @@ class RadiusSearchWorker(QThread):
     def run(self):
         """Search for images within the specified radius."""
         try:
-            print(f"RadiusSearchWorker DEBUG:")
-            print(f"  Coordinates: {self.latitude}, {self.longitude}")
-            print(f"  Radius: {self.radius}m")
-            print(f"  Folder filter: {self.folder}")
-            print(f"  Session filter: {self.session}")
-            print(f"  Tag filters: {self.tag_filters}")
-            print(f"  Min altitude: {self.min_alt}")
-            print(f"  Max altitude: {self.max_alt}")
+            logger.debug("RadiusSearchWorker DEBUG:")
+            logger.debug(f"  Coordinates: {self.latitude}, {self.longitude}")
+            logger.debug(f"  Radius: {self.radius}m")
+            logger.debug(f"  Folder filter: {self.folder}")
+            logger.debug(f"  Session filter: {self.session}")
+            logger.debug(f"  Tag filters: {self.tag_filters}")
+            logger.debug(f"  Min altitude: {self.min_alt}")
+            logger.debug(f"  Max altitude: {self.max_alt}")
             
             # Convert radius to degrees (approximate)
             # 1 degree of latitude = ~111km
@@ -306,7 +306,7 @@ class RadiusSearchWorker(QThread):
                 self.session,
                 self.tag_filters
             )
-            print(f"Database returned {len(results)} images from bounding box")
+            logger.info(f"Database returned {len(results)} images from bounding box")
             
             # Filter by exact distance and altitude
             images_within_radius = []
