@@ -1,8 +1,5 @@
-from PyQt6.QtWidgets import QApplication
-import sys
-
-from gui.main_window import MainWindow
-from gui.tag_config import (
+from .main_window import MainWindow
+from .tag_config import (
     TagCache,
     parse_tags_config,
     find_applicable_tags,
@@ -15,6 +12,7 @@ from gui.tag_config import (
     load_config,
     update_config,
 )
+from .search import radius_search
 
 __all__ = [
     "MainWindow",
@@ -29,13 +27,5 @@ __all__ = [
     "TagConfigTab",
     "load_config",
     "update_config",
+    "radius_search",
 ]
-
-def main():
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
-
-if __name__ == "__main__":
-    main()
