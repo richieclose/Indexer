@@ -95,6 +95,18 @@ from exif_utils import (
 )
 
 # Tags configuration processing functions
+
+class TagCache:
+    """Cache mapping a ``tags.config`` file path to its parsed tag dictionary."""
+
+    def __init__(self) -> None:
+        self._cache: Dict[str, Dict[str, str]] = {}
+
+    def get(self, config_path: str) -> Dict[str, str]:
+        """Return cached tags for ``config_path``, parsing if unseen."""
+        if config_path not in self._cache:
+            self._cache[config_path] = parse_tags_config(config_path)
+        return self._cache[config_path]
 def parse_tags_config(config_path: str) -> Dict[str, str]:
     """Parse a tags.config file and return a dictionary of tag name -> value pairs.
 
@@ -136,8 +148,12 @@ def parse_tags_config(config_path: str) -> Dict[str, str]:
     
     return tags
 
-def find_applicable_tags(image_path: str) -> Dict[str, str]:
-    """Find all applicable tags for an image by walking up the directory tree."""
+def find_applicable_tags(image_path: str, tag_cache: Optional[TagCache] = None) -> Dict[str, str]:
+    """Find all applicable tags for an image by walking up the directory tree.
+
+    If ``tag_cache`` is provided, parsed ``tags.config`` files will be cached so
+    repeated calls avoid re-reading the same files.
+    """
     applicable_tags = {}
     
     # Start from the image's directory and walk up to root
@@ -149,7 +165,10 @@ def find_applicable_tags(image_path: str) -> Dict[str, str]:
     while current_dir:
         config_path = os.path.join(current_dir, 'tags.config')
         if os.path.exists(config_path):
-            level_tags = parse_tags_config(config_path)
+            if tag_cache is not None:
+                level_tags = tag_cache.get(config_path)
+            else:
+                level_tags = parse_tags_config(config_path)
             if level_tags:
                 tags_stack.append((current_dir, level_tags))
         
@@ -227,10 +246,12 @@ def process_tags_for_batch(image_files: List[str], db_path: str) -> Tuple[Dict[s
     # Collect all tags for all images
     all_image_tags: Dict[str, Dict[str, str]] = {}
     all_unique_tag_names_set: set[str] = set()
-    
+
     logger.info("Processing tags.config files to discover tags...")
+    tag_cache = TagCache()
+
     for image_path in image_files:
-        tags = find_applicable_tags(image_path)
+        tags = find_applicable_tags(image_path, tag_cache)
         if tags:
             normalized_tags = {}
             for t_name, t_value in tags.items():

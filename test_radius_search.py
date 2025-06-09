@@ -1,4 +1,7 @@
 import unittest
+import pytest
+
+pytest.importorskip("PyQt6")
 
 from workers import RadiusSearchWorker
 
