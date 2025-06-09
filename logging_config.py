@@ -19,7 +19,8 @@ def setup_logging(log_dir: str = None) -> None:
     # Create console handler
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
-    console_handler.setLevel(logging.INFO)
+    # Capture debug level messages on the console as well
+    console_handler.setLevel(logging.DEBUG)
     
     # Set up file handler if log directory is provided
     if log_dir:
